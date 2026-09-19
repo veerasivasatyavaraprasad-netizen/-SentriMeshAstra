@@ -77,6 +77,8 @@ export const api = {
   listApprovals: (tenantId) => request(`/api/tenants/${tenantId}/approvals`),
   decideApproval: (tenantId, approvalId, payload) =>
     request(`/api/tenants/${tenantId}/approvals/${approvalId}/decide`, { method: "POST", body: payload }),
+  rollbackAction: (tenantId, proposalId) =>
+    request(`/api/tenants/${tenantId}/actions/${proposalId}/rollback`, { method: "POST" }),
   listReports: (tenantId) => request(`/api/tenants/${tenantId}/reports`),
   generateReport: (tenantId) => request(`/api/tenants/${tenantId}/reports/generate-now`, { method: "POST" }),
   listActivity: (tenantId) => request(`/api/tenants/${tenantId}/activity`),

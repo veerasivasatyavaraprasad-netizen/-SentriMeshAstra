@@ -27,7 +27,7 @@ below. Read that section before pitching this to a customer.
 | 3 | Detection & Triage | `backend/app/agents/detection.py` | Correlates events, dedups ongoing campaigns, opens incidents, maps MITRE ATT&CK |
 | 4 | Threat Intelligence | `backend/app/agents/threat_intel.py` | Looks up IP/indicator reputation, enriches incidents |
 | 5 | Exposure | `backend/app/agents/exposure.py` | Scans the tenant's own verified domain for missing hardening |
-| 6 | Response | `backend/app/agents/response.py` | Proposes actions, executes tier-1 automatically, requests approval otherwise |
+| 6 | Response | `backend/app/agents/response.py` | Proposes actions, executes tier-1 automatically, requests approval otherwise, supports rollback |
 | 7 | Compliance & Reporting | `backend/app/agents/reporting.py` | Daily reports, email notifications |
 | 8 | Guardian | `backend/app/agents/guardian.py` | Independently re-checks every proposed action's tier, watches connector health, is the kill switch's home |
 
@@ -48,10 +48,15 @@ message is written to the audit log before it's dispatched** — that's
   *engage* it (stop all automated/approved execution immediately); only
   the admin can *disengage* it. Checked by the Response agent immediately
   before every execution, even for an already-approved action.
-- **Dry-run execution by default**: nothing in this codebase reaches a
-  real firewall, IdP, or EDR yet (see below). Every execution is logged
-  and its intended effect is recorded, but nothing outside
-  SentriMeshAstra's own database changes until you wire a real connector.
+- **Dry-run execution by default**: `block_ip` can really execute — see
+  [Real response execution](#real-response-execution-block_ip) below — but
+  it's off unless you explicitly opt in, and every other action type stays
+  a logged, dry-run simulation until its own executor is written. Nothing
+  outside what you opt into changes until you wire a real connector.
+- **Rollback**: every reversible executed action can be rolled back from
+  the Approvals page (or `POST /api/tenants/{id}/actions/{id}/rollback`).
+  Against the dry-run executor this simulates the rollback; against
+  `IPTablesExecutor` it really removes the block.
 - **Multi-tenant isolation**: every table is scoped by `tenant_id`, and
   every route checks the caller's role/tenant before returning data. A
   security holder cannot see another company's tenant, even by ID.
@@ -87,13 +92,19 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 export DATABASE_URL=postgresql+asyncpg://sentrimesh:sentrimesh@localhost:5432/sentrimesh
 export REDIS_URL=redis://localhost:6379/0
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload    # runs `alembic upgrade head` automatically on startup
 
 # separately:
 cd frontend
 npm install
 npm run dev
 ```
+
+Schema changes go through Alembic (`backend/alembic/versions/`), not
+`create_all`. After changing a model in `app/models.py`, generate a new
+migration with `alembic revision --autogenerate -m "..."` from `backend/`
+(with `DATABASE_URL` set) and commit the generated file — the app applies
+it automatically on its next startup.
 
 ### Try the full pipeline without any real log source
 
@@ -110,15 +121,36 @@ npm run dev
 5. Try Overview → **Engage kill switch**, then simulate another attack and
    approve its action: execution is blocked and the audit log records why.
 
+### Real response execution (`block_ip`)
+
+By default every action executes as a dry-run — logged, never real. Set
+`ENABLE_REAL_RESPONSE_EXECUTION=true` and `block_ip` really firewalls the
+**host this backend runs on** via `iptables` (see
+`backend/app/connectors/executor.py::IPTablesExecutor`), with a genuine,
+tested rollback. This is a real integration, not a mock — but it firewalls
+whatever machine is running the backend, so only enable it where that
+machine *is* your enforcement point (an edge/gateway host), never a shared
+app server. Every other action type still dry-runs regardless of this
+flag, since no other executor exists yet.
+
+### Real threat intelligence
+
+Set `ABUSEIPDB_API_KEY` and the Threat Intelligence agent looks up real IP
+reputation via the AbuseIPDB API instead of the local demo blocklist. Any
+failure (timeout, bad response, no key) falls back to the local list
+automatically — a flaky third party never breaks the pipeline.
+
 ### Tests
 
 ```bash
 cd backend && source .venv/bin/activate && python -m pytest tests/ -v
 ```
 
-13 unit tests cover the policy engine's tier decisions (destructive
+19 unit tests cover the policy engine's tier decisions (destructive
 actions always human-only regardless of severity, tier escalation at
-critical severity, etc.) and the detection/threat-intel pure logic.
+critical severity, etc.), the detection/threat-intel pure logic, the
+AbuseIPDB fallback path, and — when run as root with `iptables` available
+— a real block-then-rollback round trip against the host's firewall.
 
 ## Scope and limits — read this before selling it
 
@@ -126,11 +158,13 @@ This MVP proves the architecture works end-to-end. It is not yet the
 platform described in the full project plan. Specifically, **not
 implemented**:
 
-- **Real response execution.** `backend/app/connectors/executor.py` ships
-  only a `DryRunExecutor`. Wiring an actual firewall/EDR/IdP (AWS Security
-  Groups, Azure AD, CrowdStrike, etc.) means writing one `ActionExecutor`
-  subclass per integration and selecting it per tenant connector config —
-  the interface is ready, the integrations aren't written.
+- **Response execution beyond `block_ip`.** `IPTablesExecutor` is a real,
+  tested integration for one action against one kind of target (this
+  host's own firewall). Every other action type (`disable_account`,
+  `quarantine_endpoint`, etc.) and any customer cloud/IdP/EDR integration
+  (AWS Security Groups, Azure AD, CrowdStrike, etc.) still needs its own
+  `ActionExecutor` subclass — the interface and the rollback contract are
+  proven, the rest of the integrations aren't written.
 - **Real SIEM connectors.** Only a generic webhook (`POST
   /api/tenants/{id}/ingest`) and a synthetic demo feed exist. A real Wazuh
   (or Splunk, CloudTrail, Azure AD sign-in log, etc.) forwarder needs its
@@ -147,18 +181,14 @@ implemented**:
   isn't duplicated across a restart, but the sliding-window counters
   themselves are not shared). Running more than one backend replica needs
   those counters moved to Redis.
-- **Threat intelligence feeds.** `backend/app/connectors/threat_feed.py`
-  ships a tiny local demo blocklist. No AbuseIPDB/VirusTotal/etc.
-  integration is wired up — the call site is isolated so adding one is a
-  single-file change.
+- **Threat intelligence feeds beyond AbuseIPDB.** VirusTotal, file-hash and
+  CVE lookups aren't wired up — the call site is isolated so adding one is
+  a single-file change, same pattern as the AbuseIPDB integration.
 - **Deeper authorized pentesting.** The Exposure agent does passive,
   read-only checks (TLS, security headers) against the tenant's own
   verified domain only. Active/authorized penetration testing is a scoped,
   contract-gated feature for a later phase — this repo intentionally does
   not build anything that could be pointed at a third party.
-- **Alembic migrations.** Tables are created with `create_all` at startup.
-  Fine for an MVP; move to versioned Alembic migrations before production
-  schema changes.
 - **Secrets vault, SOC 2/ISO 27001, external pentest, bug bounty.** All
   named in the original plan's hardening section as pre-launch
   requirements for handling many customers' data — none of that is a

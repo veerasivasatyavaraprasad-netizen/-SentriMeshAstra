@@ -34,6 +34,20 @@ export function Approvals() {
     }
   }
 
+  async function rollback(proposalId) {
+    setBusyId(proposalId);
+    setError("");
+    try {
+      const res = await api.rollbackAction(tenantId, proposalId);
+      setError(res.outcome.success ? "" : res.outcome.detail);
+      load();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   if (!tenantId) return <div className="panel">Select a company from the sidebar.</div>;
 
   const pending = approvals.filter((a) => a.status === "pending");
@@ -97,18 +111,39 @@ export function Approvals() {
               <th>Status</th>
               <th>Decided</th>
               <th>Note</th>
+              <th>Execution</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {decided.map((a) => (
-              <tr key={a.id}>
-                <td>{a.action?.action_type}</td>
-                <td><Badge value={a.action?.tier} /></td>
-                <td><Badge value={a.status} /></td>
-                <td>{a.decided_at ? new Date(a.decided_at).toLocaleString() : "—"}</td>
-                <td>{a.decision_note}</td>
-              </tr>
-            ))}
+            {decided.map((a) => {
+              const rolledBack = a.action?.execution_result?.rolled_back;
+              return (
+                <tr key={a.id}>
+                  <td>{a.action?.action_type}</td>
+                  <td><Badge value={a.action?.tier} /></td>
+                  <td><Badge value={a.status} /></td>
+                  <td>{a.decided_at ? new Date(a.decided_at).toLocaleString() : "—"}</td>
+                  <td>{a.decision_note}</td>
+                  <td className="muted">
+                    {a.action?.executed
+                      ? rolledBack
+                        ? "rolled back"
+                        : a.action.execution_result?.simulated
+                          ? "simulated"
+                          : "executed"
+                      : "—"}
+                  </td>
+                  <td>
+                    {a.action?.executed && a.action?.reversible && !rolledBack && (
+                      <button disabled={busyId === a.action.id} onClick={() => rollback(a.action.id)}>
+                        Roll back
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

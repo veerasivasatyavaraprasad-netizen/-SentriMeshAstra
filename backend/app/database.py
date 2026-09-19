@@ -18,14 +18,3 @@ class Base(DeclarativeBase):
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         yield session
-
-
-async def init_models() -> None:
-    """Create tables if they don't exist.
-
-    For an MVP this replaces Alembic migrations. Before any production
-    deployment, switch to versioned Alembic migrations instead of
-    create_all — this is called out again in README.md's roadmap.
-    """
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)

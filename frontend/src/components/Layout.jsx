@@ -13,13 +13,13 @@ const NAV_ITEMS = [
 ];
 
 export function Layout() {
-  const { session, logout, isAdmin, activeTenantId, setActiveTenantId } = useSession();
+  const { session, logout, isAdmin, activeTenantId, setActiveTenantId, tenantsVersion } = useSession();
   const [tenants, setTenants] = useState([]);
   const navigate = useNavigate();
 
   useEffect(() => {
     api.listTenants().then(setTenants).catch(() => {});
-  }, []);
+  }, [tenantsVersion]);
 
   function handleLogout() {
     logout();

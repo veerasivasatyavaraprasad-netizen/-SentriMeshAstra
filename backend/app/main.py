@@ -8,8 +8,9 @@ from app.agents.runner import AgentFleet
 from app.auth import bootstrap_admin
 from app.bus import get_bus
 from app.config import get_settings
-from app.database import AsyncSessionLocal, init_models
-from app.routers import activity, approvals, auth, connectors, incidents, ingest, overview, reports, tenants
+from app.database import AsyncSessionLocal
+from app.migrate import run_migrations
+from app.routers import actions, activity, approvals, auth, connectors, incidents, ingest, overview, reports, tenants
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 settings = get_settings()
@@ -17,7 +18,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_models()
+    await run_migrations()
     async with AsyncSessionLocal() as db:
         await bootstrap_admin(db)
 
@@ -51,6 +52,7 @@ app.include_router(tenants.router)
 app.include_router(ingest.router)
 app.include_router(incidents.router)
 app.include_router(approvals.router)
+app.include_router(actions.router)
 app.include_router(reports.router)
 app.include_router(activity.router)
 app.include_router(overview.router)

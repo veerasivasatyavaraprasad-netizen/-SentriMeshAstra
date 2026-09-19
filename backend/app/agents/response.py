@@ -102,7 +102,7 @@ class ResponseAgent(Agent):
                 )
                 return
 
-            executor = get_executor()
+            executor = get_executor(proposal.action_type)
             result = await executor.execute(proposal.action_type, proposal.parameters)
 
             proposal.executed = True
@@ -120,3 +120,33 @@ class ResponseAgent(Agent):
     async def execute_approved(self, proposal_id: str) -> None:
         """Entry point used by the approvals API route once a human approves."""
         await self._execute(proposal_id)
+
+    async def rollback(self, proposal_id: str) -> dict:
+        """Entry point used by the API route when a human asks to undo an
+        already-executed action. Only meaningful for executors that keep
+        real state (e.g. IPTablesExecutor); DryRunExecutor's rollback is
+        itself a no-op simulation."""
+        async with self.session() as db:
+            result = await db.execute(select(ActionProposal).where(ActionProposal.id == proposal_id))
+            proposal = result.scalar_one_or_none()
+            if proposal is None or not proposal.executed:
+                return {"success": False, "detail": "Action was never executed — nothing to roll back."}
+
+            executor = get_executor(proposal.action_type)
+            outcome = await executor.rollback(proposal.action_type, proposal.parameters)
+
+            proposal.execution_result = {
+                **proposal.execution_result,
+                "rolled_back": outcome.success,
+                "rollback_detail": outcome.detail,
+            }
+            await db.commit()
+
+        await self.bus.audit(
+            actor=self.name,
+            action="rollback",
+            payload={"proposal_id": proposal_id, "success": outcome.success, "detail": outcome.detail},
+            tenant_id=proposal.tenant_id,
+        )
+        self.log("Rolled back proposal %s: %s", proposal_id, outcome.detail)
+        return {"success": outcome.success, "detail": outcome.detail}

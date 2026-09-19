@@ -6,6 +6,11 @@ const SessionContext = createContext(null);
 export function SessionProvider({ children }) {
   const [session, setSession] = useState(getSession);
   const [activeTenantId, setActiveTenantId] = useState(() => getSession()?.tenantId || "");
+  // Bumped whenever a tenant is created/changed elsewhere in the app, so
+  // the sidebar's tenant list (fetched by Layout) knows to refetch instead
+  // of showing a stale list until the next full page reload.
+  const [tenantsVersion, setTenantsVersion] = useState(0);
+  const refreshTenants = () => setTenantsVersion((v) => v + 1);
 
   useEffect(() => {
     if (session?.tenantId) setActiveTenantId(session.tenantId);
@@ -29,7 +34,9 @@ export function SessionProvider({ children }) {
   const isAdmin = session?.role === "admin";
 
   return (
-    <SessionContext.Provider value={{ session, login, logout, isAdmin, activeTenantId, setActiveTenantId }}>
+    <SessionContext.Provider
+      value={{ session, login, logout, isAdmin, activeTenantId, setActiveTenantId, tenantsVersion, refreshTenants }}
+    >
       {children}
     </SessionContext.Provider>
   );

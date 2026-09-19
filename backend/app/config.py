@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     # agent execution.
     global_autonomy_enabled: bool = True
 
+    # Off by default. When true, supported actions (currently block_ip)
+    # really execute via IPTablesExecutor against the HOST THIS BACKEND
+    # RUNS ON — see app/connectors/executor.py. Only enable this where the
+    # backend itself is the enforcement point (an edge/gateway host), and
+    # only once you understand exactly what it will firewall.
+    enable_real_response_execution: bool = False
+
+    # AbuseIPDB — used by the Threat Intelligence agent when set; falls
+    # back to the small local demo blocklist otherwise.
+    abuseipdb_api_key: str | None = None
+
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
 

@@ -85,6 +85,7 @@ export function Settings() {
 }
 
 function AdminPanel({ onChanged }) {
+  const { refreshTenants, setActiveTenantId } = useSession();
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
   const [sector, setSector] = useState("general");
@@ -104,6 +105,8 @@ function AdminPanel({ onChanged }) {
       const t = await api.createTenant({ name, domain, sector });
       setTenantCreated(t);
       setHolderTenantId(t.id);
+      refreshTenants();
+      setActiveTenantId(t.id);
       onChanged();
     } catch (err) {
       setError(err.message);

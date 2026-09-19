@@ -24,7 +24,7 @@ class ThreatIntelAgent(Agent):
         malicious_indicator = False
 
         if src_ip:
-            verdict = lookup_ip(src_ip)
+            verdict = await lookup_ip(src_ip)
             malicious_indicator = verdict["verdict"] == "malicious"
             enrichment_update["ip_reputation"] = {src_ip: verdict}
             await self._cache_indicator(src_ip, verdict)
