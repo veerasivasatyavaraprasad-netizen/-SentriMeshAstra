@@ -148,13 +148,24 @@ reputation via the AbuseIPDB API instead of the local demo blocklist. Any
 failure (timeout, bad response, no key) falls back to the local list
 automatically — a flaky third party never breaks the pipeline.
 
+### Connecting a real log source (Wazuh, etc.)
+
+Settings → "Add connector & issue token" mints a per-connector secret
+(shown exactly once) and stores only its hash. Point the forwarder at
+`POST /api/tenants/{tenant_id}/ingest` with `Authorization: Bearer
+<token>` — no human session token involved. A leaked token is remediated
+by rotating it (invalidates the old one immediately) rather than needing
+to delete and recreate the connector. The console's own "Simulate demo
+attack" button keeps using your logged-in session, since it's a human
+action, not a forwarder.
+
 ### Tests
 
 ```bash
 cd backend && source .venv/bin/activate && python -m pytest tests/ -v
 ```
 
-38 tests, two kinds:
+40 tests, two kinds:
 
 - **Unit tests** (policy engine tier decisions, detection/threat-intel
   pure logic, the AbuseIPDB fallback path, Redis-backed sliding-window
@@ -195,9 +206,6 @@ implemented**:
   `tenant_id` scoping — logical isolation, enforced at the query layer.
   Separate databases/encryption keys per customer (the project plan's
   hardening goal) is a real infrastructure project, not done here.
-- **Machine-to-machine connector auth.** The ingest endpoint currently
-  authenticates with the console's own JWT. A real SIEM forwarder needs a
-  per-connector secret token instead.
 - **Threat intelligence feeds beyond AbuseIPDB.** VirusTotal, file-hash and
   CVE lookups aren't wired up — the call site is isolated so adding one is
   a single-file change, same pattern as the AbuseIPDB integration.

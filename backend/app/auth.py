@@ -35,10 +35,11 @@ def create_access_token(user: User) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-async def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User:
+async def user_from_jwt(token: str, db: AsyncSession) -> User:
+    """The actual JWT->User lookup, factored out of the get_current_user
+    dependency so it's also callable from the ingest route's manual
+    auth branch (human JWT vs. connector secret token — see
+    app/connector_auth.py) without duplicating it."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -57,6 +58,13 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise credentials_exception
     return user
+
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    return await user_from_jwt(token, db)
 
 
 def require_admin(user: User = Depends(get_current_user)) -> User:

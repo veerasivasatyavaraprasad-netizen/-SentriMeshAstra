@@ -30,7 +30,12 @@ async def test_lockout_trips_after_max_attempts_for_one_email(bus):
     if not await _redis_reachable():
         pytest.skip("Redis not reachable in this environment")
     email = f"{uuid.uuid4().hex}@example.com"
-    ip = "203.0.113.9"
+    # A unique-per-run key, not a syntactically real IP — ratelimit.py
+    # only ever uses this as a Redis key component, never parses it, and
+    # a fixed literal here previously accumulated state across repeated
+    # local test runs sharing the same Redis DB until it tripped on its
+    # own, unrelated to whatever the test was actually asserting that run.
+    ip = f"test-ip-{uuid.uuid4().hex}"
     settings = get_settings()
 
     for _ in range(settings.login_max_attempts_per_email - 1):
@@ -50,8 +55,8 @@ async def test_lockout_does_not_leak_across_different_emails(bus):
         pytest.skip("Redis not reachable in this environment")
     email_a = f"{uuid.uuid4().hex}@example.com"
     email_b = f"{uuid.uuid4().hex}@example.com"
-    ip_a = "203.0.113.10"
-    ip_b = "203.0.113.11"
+    ip_a = f"test-ip-{uuid.uuid4().hex}"
+    ip_b = f"test-ip-{uuid.uuid4().hex}"
     settings = get_settings()
 
     for _ in range(settings.login_max_attempts_per_email):

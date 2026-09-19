@@ -84,6 +84,8 @@ export const api = {
   listActivity: (tenantId) => request(`/api/tenants/${tenantId}/activity`),
   listConnectors: (tenantId) => request(`/api/tenants/${tenantId}/connectors`),
   addConnector: (tenantId, payload) => request(`/api/tenants/${tenantId}/connectors`, { method: "POST", body: payload }),
+  rotateConnectorToken: (tenantId, connectorId) =>
+    request(`/api/tenants/${tenantId}/connectors/${connectorId}/rotate-token`, { method: "POST" }),
 
   platformAudit: () => request("/api/admin/platform-audit"),
 

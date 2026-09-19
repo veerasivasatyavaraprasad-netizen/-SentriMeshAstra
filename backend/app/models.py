@@ -109,6 +109,12 @@ class ConnectorConfig(Base):
     last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    # SHA-256 of the connector's bearer secret token — never the raw token
+    # itself (see app/connector_auth.py). Null for connectors that only
+    # ever get pushed to by the console under a human's own JWT (e.g. the
+    # synthetic_demo connector).
+    token_hash: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+
 
 class LogEvent(Base):
     """Normalized event, as produced by the Integration agent."""

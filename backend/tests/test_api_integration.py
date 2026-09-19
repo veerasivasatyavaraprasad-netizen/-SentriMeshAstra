@@ -330,3 +330,90 @@ async def test_ingest_rejects_malformed_events_gracefully(client, bad_ip):
         headers=_auth(admin_token),
     )
     assert r.status_code == 200
+
+
+async def test_connector_token_authenticates_ingest_without_a_human_jwt(client):
+    """The whole point of connector tokens: a real forwarder (Wazuh, etc.)
+    authenticates with its own secret, never a human's session token."""
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/connectors",
+        json={"connector_type": "wazuh", "display_name": "Prod Wazuh"},
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200, r.text
+    connector = r.json()
+    assert connector["token"].startswith("smac_")
+    assert connector["has_token"] is True
+
+    # The token alone authenticates — no human Authorization at all otherwise.
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/ingest",
+        json={"source": "wazuh", "event_type": "login_failed", "data": {"src_ip": "198.51.100.23"}},
+        headers={"Authorization": f"Bearer {connector['token']}"},
+    )
+    assert r.status_code == 200, r.text
+
+    # The connector's health (last_event_at) reflects that push.
+    async def connector_seen():
+        resp = await client.get(f"/api/tenants/{tenant['id']}/connectors", headers=_auth(admin_token))
+        matching = [c for c in resp.json() if c["id"] == connector["id"]]
+        return matching[0] if matching and matching[0]["last_event_at"] else None
+
+    seen = await _wait_until(connector_seen)
+    assert seen["last_event_at"] is not None
+
+    # A garbage token is rejected outright.
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/ingest",
+        json={"source": "wazuh", "event_type": "login_failed", "data": {}},
+        headers={"Authorization": "Bearer smac_totally-fake"},
+    )
+    assert r.status_code == 401
+
+    # Rotating the token invalidates the old one immediately.
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/connectors/{connector['id']}/rotate-token", headers=_auth(admin_token)
+    )
+    assert r.status_code == 200
+    new_token = r.json()["token"]
+    assert new_token != connector["token"]
+
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/ingest",
+        json={"source": "wazuh", "event_type": "login_failed", "data": {}},
+        headers={"Authorization": f"Bearer {connector['token']}"},  # the OLD token
+    )
+    assert r.status_code == 401
+
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/ingest",
+        json={"source": "wazuh", "event_type": "login_failed", "data": {}},
+        headers={"Authorization": f"Bearer {new_token}"},
+    )
+    assert r.status_code == 200
+
+
+async def test_demo_attack_updates_the_demo_connectors_health(client):
+    """Regression test for a real bug: simulate-attack and the generic
+    ingest route never attached connector_id to the events they published,
+    so Overview's "Coverage health" panel showed every connector as having
+    no events, forever, even right after a successful simulated attack."""
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+
+    r = await client.get(f"/api/tenants/{tenant['id']}/connectors", headers=_auth(admin_token))
+    demo_connector = next(c for c in r.json() if c["connector_type"] == "synthetic_demo")
+    assert demo_connector["last_event_at"] is None
+
+    await client.post(f"/api/tenants/{tenant['id']}/demo/simulate-attack", headers=_auth(admin_token))
+
+    async def demo_connector_seen():
+        resp = await client.get(f"/api/tenants/{tenant['id']}/connectors", headers=_auth(admin_token))
+        c = next(x for x in resp.json() if x["connector_type"] == "synthetic_demo")
+        return c if c["last_event_at"] else None
+
+    seen = await _wait_until(demo_connector_seen)
+    assert seen["last_event_at"] is not None

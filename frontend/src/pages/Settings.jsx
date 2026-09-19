@@ -9,6 +9,9 @@ export function Settings() {
   const [connectors, setConnectors] = useState([]);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [revealedToken, setRevealedToken] = useState(null); // { connectorId, token } — shown exactly once
+  const [newConnectorType, setNewConnectorType] = useState("wazuh");
+  const [newConnectorName, setNewConnectorName] = useState("");
 
   const load = useCallback(() => {
     if (!tenantId) return;
@@ -24,6 +27,33 @@ export function Settings() {
     try {
       await api.requestExposureScan(tenantId, tenant.domain);
       setMessage(`Exposure scan of ${tenant.domain} requested — see Incidents shortly for the results.`);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function createConnector(e) {
+    e.preventDefault();
+    setError("");
+    try {
+      const created = await api.addConnector(tenantId, {
+        connector_type: newConnectorType,
+        display_name: newConnectorName || newConnectorType,
+      });
+      setRevealedToken({ connectorId: created.id, token: created.token });
+      setNewConnectorName("");
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function rotateToken(connectorId) {
+    setError("");
+    try {
+      const rotated = await api.rotateConnectorToken(tenantId, connectorId);
+      setRevealedToken({ connectorId, token: rotated.token });
+      load();
     } catch (e) {
       setError(e.message);
     }
@@ -55,7 +85,9 @@ export function Settings() {
                 <th>Name</th>
                 <th>Type</th>
                 <th>Active</th>
+                <th>Auth</th>
                 <th>Last event</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -64,15 +96,61 @@ export function Settings() {
                   <td>{c.display_name}</td>
                   <td>{c.connector_type}</td>
                   <td>{c.is_active ? "yes" : "no"}</td>
+                  <td className="muted">{c.has_token ? "connector token" : "console (JWT) only"}</td>
                   <td>{c.last_event_at ? new Date(c.last_event_at).toLocaleString() : "—"}</td>
+                  <td>
+                    {c.has_token && (
+                      <button onClick={() => rotateToken(c.id)} title="Invalidates the current token immediately">
+                        Rotate token
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+
+          {revealedToken && (
+            <div className="panel" style={{ background: "var(--bg-panel-alt)", marginTop: 12 }}>
+              <strong>Copy this token now — it won't be shown again.</strong>
+              <div className="description-pre" style={{ marginTop: 8 }}>
+                {revealedToken.token}
+              </div>
+              <p className="muted" style={{ marginTop: 8, marginBottom: 0 }}>
+                Point the forwarder's webhook at{" "}
+                <code>POST /api/tenants/{tenantId}/ingest</code> with header{" "}
+                <code>Authorization: Bearer {"<token>"}</code>.
+              </p>
+              <button style={{ marginTop: 10 }} onClick={() => setRevealedToken(null)}>
+                Done, I've copied it
+              </button>
+            </div>
+          )}
+
+          {isAdmin && (
+            <form onSubmit={createConnector} className="row wrap" style={{ marginTop: 14 }}>
+              <select value={newConnectorType} onChange={(e) => setNewConnectorType(e.target.value)}>
+                <option value="wazuh">Wazuh</option>
+                <option value="splunk">Splunk</option>
+                <option value="cloudtrail">AWS CloudTrail</option>
+                <option value="azure_ad">Azure AD sign-in logs</option>
+                <option value="generic">Generic webhook</option>
+              </select>
+              <input
+                placeholder="Display name (optional)"
+                value={newConnectorName}
+                onChange={(e) => setNewConnectorName(e.target.value)}
+              />
+              <button className="primary" type="submit">
+                Add connector &amp; issue token
+              </button>
+            </form>
+          )}
+
           <p className="muted" style={{ marginTop: 10 }}>
-            The demo feed is added automatically for every new company. Wiring a real SIEM (e.g. Wazuh) means
-            pointing its webhook forwarder at{" "}
-            <code>POST /api/tenants/{tenantId}/ingest</code> — see the README for the connector shape.
+            The demo feed is added automatically for every new company and stays console-only (your own login, not
+            a token). A real forwarder authenticates with its own connector token, issued above — never a human's
+            session.
           </p>
         </div>
       )}
