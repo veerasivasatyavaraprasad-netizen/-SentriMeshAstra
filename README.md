@@ -1,5 +1,7 @@
 # SentriMeshAstra
 
+[![CI](https://github.com/veerasivasatyavaraprasad-netizen/-SentriMeshAstra/actions/workflows/ci.yml/badge.svg)](https://github.com/veerasivasatyavaraprasad-netizen/-SentriMeshAstra/actions/workflows/ci.yml)
+
 An AI security team platform: a small fleet of agents that monitors a
 company's own connected systems (logs, cloud, endpoints), investigates,
 proposes and — within limits it cannot cross on its own — executes a
@@ -60,6 +62,12 @@ message is written to the audit log before it's dispatched** — that's
 - **Multi-tenant isolation**: every table is scoped by `tenant_id`, and
   every route checks the caller's role/tenant before returning data. A
   security holder cannot see another company's tenant, even by ID.
+- **Login brute-force lockout**: `app/ratelimit.py` counts failed attempts
+  per email and per source IP in Redis (shared across replicas); either
+  one crossing its threshold (defaults: 8/email, 30/IP, 5-minute window)
+  locks out further attempts, including a correct password, until the
+  window rolls off. Every failure and lockout is written to the audit
+  log; the admin sees them under Settings → Platform security log.
 
 ## Two logins
 
@@ -146,11 +154,25 @@ automatically — a flaky third party never breaks the pipeline.
 cd backend && source .venv/bin/activate && python -m pytest tests/ -v
 ```
 
-19 unit tests cover the policy engine's tier decisions (destructive
-actions always human-only regardless of severity, tier escalation at
-critical severity, etc.), the detection/threat-intel pure logic, the
-AbuseIPDB fallback path, and — when run as root with `iptables` available
-— a real block-then-rollback round trip against the host's firewall.
+38 tests, two kinds:
+
+- **Unit tests** (policy engine tier decisions, detection/threat-intel
+  pure logic, the AbuseIPDB fallback path, Redis-backed sliding-window
+  counters — including a same-counter-from-two-connections test standing
+  in for two backend replicas — login lockout logic, and, when run as
+  root with `iptables` available, a real block-then-rollback round trip
+  against the host's firewall). A handful skip automatically if Redis
+  isn't reachable, rather than failing for an environment gap.
+- **API integration tests** (`tests/test_api_integration.py`) drive the
+  real FastAPI app — real Alembic migrations, a real Postgres database, a
+  real Redis-backed agent bus with all 8 agents actually running — via
+  `httpx.AsyncClient`. They cover tenant onboarding and isolation, the
+  full attack-to-pending-approval pipeline, approve/reject/rollback,
+  kill-switch enforcement (including the security-holder-can't-disengage
+  rule), report generation, per-tenant activity scoping, and admin-only
+  platform audit access. They run against a dedicated `sentrimesh_test`
+  database (dropped and recreated fresh each test session) and a separate
+  Redis logical DB — never your dev data.
 
 ## Scope and limits — read this before selling it
 
@@ -176,11 +198,6 @@ implemented**:
 - **Machine-to-machine connector auth.** The ingest endpoint currently
   authenticates with the console's own JWT. A real SIEM forwarder needs a
   per-connector secret token instead.
-- **Multi-instance correlation state.** Detection's failed-login counters
-  live in the process's memory (falling back to a DB check so an incident
-  isn't duplicated across a restart, but the sliding-window counters
-  themselves are not shared). Running more than one backend replica needs
-  those counters moved to Redis.
 - **Threat intelligence feeds beyond AbuseIPDB.** VirusTotal, file-hash and
   CVE lookups aren't wired up — the call site is isolated so adding one is
   a single-file change, same pattern as the AbuseIPDB integration.

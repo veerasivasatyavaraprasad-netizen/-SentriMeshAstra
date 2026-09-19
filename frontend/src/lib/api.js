@@ -85,6 +85,8 @@ export const api = {
   listConnectors: (tenantId) => request(`/api/tenants/${tenantId}/connectors`),
   addConnector: (tenantId, payload) => request(`/api/tenants/${tenantId}/connectors`, { method: "POST", body: payload }),
 
+  platformAudit: () => request("/api/admin/platform-audit"),
+
   simulateAttack: (tenantId) => request(`/api/tenants/${tenantId}/demo/simulate-attack`, { method: "POST" }),
   requestExposureScan: (tenantId, domain) =>
     request(`/api/tenants/${tenantId}/exposure-scan?domain=${encodeURIComponent(domain)}`, { method: "POST" }),

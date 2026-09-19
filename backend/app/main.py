@@ -10,7 +10,19 @@ from app.bus import get_bus
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.migrate import run_migrations
-from app.routers import actions, activity, approvals, auth, connectors, incidents, ingest, overview, reports, tenants
+from app.routers import (
+    actions,
+    activity,
+    admin_audit,
+    approvals,
+    auth,
+    connectors,
+    incidents,
+    ingest,
+    overview,
+    reports,
+    tenants,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 settings = get_settings()
@@ -57,6 +69,7 @@ app.include_router(reports.router)
 app.include_router(activity.router)
 app.include_router(overview.router)
 app.include_router(connectors.router)
+app.include_router(admin_audit.router)
 
 
 @app.get("/api/health")

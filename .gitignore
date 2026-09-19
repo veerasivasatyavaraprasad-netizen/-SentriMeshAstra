@@ -13,3 +13,7 @@ frontend/dist/
 
 # OS
 .DS_Store
+
+# Local Redis snapshot (created if redis-server runs with its default
+# working directory during local dev/testing)
+dump.rdb

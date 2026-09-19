@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     app_name: str = "SentriMeshAstra"
     environment: str = "development"
 
+    # Set by tests/conftest.py only. Switches the DB engine to NullPool:
+    # pytest-asyncio gives each test function its own event loop, and an
+    # asyncpg connection pool built in one loop can't be reused from
+    # another — NullPool sidesteps that by never pooling, which is fine
+    # for short-lived test runs and irrelevant to the real app (one
+    # long-lived loop, pool_pre_ping as normal).
+    testing: bool = False
+
     database_url: str = "postgresql+asyncpg://sentrimesh:sentrimesh@localhost:5432/sentrimesh"
     redis_url: str = "redis://localhost:6379/0"
 
@@ -59,6 +67,15 @@ class Settings(BaseSettings):
     abuseipdb_api_key: str | None = None
 
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+
+    # Login brute-force protection. Two independent counters: one per
+    # email (stops someone hammering a single account) and one per source
+    # IP (stops one source from spraying attempts across many accounts).
+    # Either tripping locks out further attempts on that key until the
+    # window rolls off.
+    login_max_attempts_per_email: int = 8
+    login_max_attempts_per_ip: int = 30
+    login_lockout_window_seconds: int = 5 * 60
 
 
 @lru_cache

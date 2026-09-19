@@ -80,7 +80,52 @@ export function Settings() {
       {error && <div className="panel error-text">{error}</div>}
 
       {isAdmin && <AdminPanel onChanged={load} />}
+      {isAdmin && <PlatformSecurityLog />}
     </>
+  );
+}
+
+function PlatformSecurityLog() {
+  const [entries, setEntries] = useState([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.platformAudit().then(setEntries).catch((e) => setError(e.message));
+  }, []);
+
+  return (
+    <div className="panel">
+      <h2>Platform security log</h2>
+      <p className="muted" style={{ marginTop: -6, marginBottom: 12 }}>
+        Login attempts against SentriMeshAstra itself — not tied to any one company. A run of
+        <code> login_locked_out</code> rows from one email or IP means the brute-force lockout is doing its job.
+      </p>
+      {error && <div className="error-text">{error}</div>}
+      {entries.length === 0 ? (
+        <div className="muted">No platform-level security events yet.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Event</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.id}>
+                <td>{new Date(e.created_at).toLocaleString()}</td>
+                <td>{e.actor}</td>
+                <td>{e.action}</td>
+                <td className="muted">{JSON.stringify(e.payload)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 

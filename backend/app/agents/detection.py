@@ -1,12 +1,10 @@
-import time
-from collections import defaultdict, deque
-
 from sqlalchemy import select
 
 from app.agents.base import Agent
 from app.bus import CH_INCIDENTS_NEW, CH_NORMALIZED_EVENTS
 from app.connectors.threat_feed import MITRE_MAP
 from app.models import LogEvent
+from app.state_store import count_without_recording, record_and_count
 
 FAILED_LOGIN_WINDOW_SECONDS = 10 * 60
 FAILED_LOGIN_THRESHOLD = 5
@@ -15,18 +13,20 @@ FAILED_LOGIN_THRESHOLD = 5
 class DetectionAgent(Agent):
     """Agent 3: correlates normalized events, filters noise, opens incidents.
 
-    Correlation state is kept in-memory per (tenant, src_ip) sliding window.
-    That's fine for a single backend process; running multiple backend
-    replicas would need this moved to Redis-backed counters — noted in
-    README.md roadmap rather than solved here, since it doesn't change the
-    detection logic itself, only where the counters live.
+    Failed-login sliding-window counts live in Redis (app/state_store.py),
+    not process memory, so correlation is correct even with more than one
+    backend replica running behind a load balancer — a burst of failed
+    logins spread across replicas by round-robin routing still hits the
+    same shared counter. The open-incident dedup cache below stays
+    per-process, but it's only a fast-path: `_open_incident` always falls
+    back to a database check on a cache miss, which is itself correct
+    across replicas since they share one database.
     """
 
     name = "detection"
 
     def __init__(self, bus):
         super().__init__(bus)
-        self._failed_logins: dict[tuple[str, str], deque] = defaultdict(deque)
         # Dedup key (tenant_id, technique_key, src_ip) -> open incident id.
         # Prevents the same ongoing campaign (e.g. one brute-force burst
         # that crosses the failed-login threshold, then succeeds) from
@@ -36,14 +36,15 @@ class DetectionAgent(Agent):
     async def register(self) -> None:
         self.bus.subscribe(CH_NORMALIZED_EVENTS, self.on_normalized_event)
 
-    def _record_failed_login(self, tenant_id: str, src_ip: str) -> int:
-        now = time.time()
-        key = (tenant_id, src_ip)
-        window = self._failed_logins[key]
-        window.append(now)
-        while window and now - window[0] > FAILED_LOGIN_WINDOW_SECONDS:
-            window.popleft()
-        return len(window)
+    async def _record_failed_login(self, tenant_id: str, src_ip: str) -> int:
+        return await record_and_count(
+            self.bus, f"failed_logins:{tenant_id}:{src_ip}", window_seconds=FAILED_LOGIN_WINDOW_SECONDS
+        )
+
+    async def _recent_failed_login_count(self, tenant_id: str, src_ip: str) -> int:
+        return await count_without_recording(
+            self.bus, f"failed_logins:{tenant_id}:{src_ip}", window_seconds=FAILED_LOGIN_WINDOW_SECONDS
+        )
 
     async def on_normalized_event(self, payload: dict) -> None:
         tenant_id = payload["tenant_id"]
@@ -53,7 +54,7 @@ class DetectionAgent(Agent):
         src_ip = normalized.get("src_ip")
 
         if event_type == "login_failed" and src_ip:
-            count = self._record_failed_login(tenant_id, src_ip)
+            count = await self._record_failed_login(tenant_id, src_ip)
             if count >= FAILED_LOGIN_THRESHOLD:
                 await self._open_incident(
                     tenant_id=tenant_id,
@@ -67,8 +68,7 @@ class DetectionAgent(Agent):
                     context={"src_ip": src_ip, "failed_login_count": count},
                 )
         elif event_type == "login_success" and src_ip:
-            key = (tenant_id, src_ip)
-            recent_failures = len(self._failed_logins.get(key, []))
+            recent_failures = await self._recent_failed_login_count(tenant_id, src_ip)
             if recent_failures >= FAILED_LOGIN_THRESHOLD:
                 await self._open_incident(
                     tenant_id=tenant_id,

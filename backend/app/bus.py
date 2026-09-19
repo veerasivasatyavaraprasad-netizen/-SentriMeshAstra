@@ -40,9 +40,18 @@ class EventBus:
         if self._listen_task:
             self._listen_task.cancel()
         if self._pubsub:
-            await self._pubsub.close()
+            await self._pubsub.aclose()
         if self._redis:
-            await self._redis.close()
+            await self._redis.aclose()
+
+    @property
+    def redis(self) -> redis.Redis:
+        """The raw Redis client, for shared state that needs to be correct
+        across multiple backend instances (sliding-window counters, rate
+        limits) — not just pub/sub. Kept on EventBus rather than a second
+        connection so there's one Redis connection lifecycle to manage."""
+        assert self._redis is not None, "EventBus.connect() must run first"
+        return self._redis
 
     def subscribe(self, channel: str, handler: Handler) -> None:
         self._handlers.setdefault(channel, []).append(handler)
