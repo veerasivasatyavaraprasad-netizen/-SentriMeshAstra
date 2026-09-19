@@ -232,6 +232,24 @@ correctly opened a MEDIUM-severity incident with a pending
 `test_wazuh_malware_alert_opens_incident_with_real_rule_description` in
 `test_api_integration.py`).
 
+### Email notifications — real SMTP, verified end-to-end
+
+Set `SMTP_HOST` (plus `SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`/
+`SMTP_FROM`/`NOTIFY_TO_EMAIL`) and tier-2/tier-3 approval requests really
+send over SMTP with STARTTLS (`app/notifications/email.py`, via
+`aiosmtplib`) — not a fire-and-forget call assumed to work. Without
+`SMTP_HOST` configured, or if a send genuinely fails (relay unreachable,
+auth rejected), it's logged instead — the platform never silently drops a
+notification, and never crashes an agent's task just because email isn't
+set up. `backend/tests/test_email_smtp.py` proves the real send path, not
+just the log fallback: it runs an actual local SMTP server (`aiosmtpd`)
+with a real, freshly-generated self-signed TLS certificate, sends through
+the app's real `send_email()`, and asserts the message that server
+*actually received* — headers, recipient override, and body — matches
+what was sent, alongside real-failure-path tests (unreachable relay,
+unconfigured SMTP) that confirm both fail closed to the log fallback
+rather than raising.
+
 ### Connecting a real log source (Wazuh, etc.)
 
 Settings → "Add connector & issue token" mints a per-connector secret
@@ -293,7 +311,7 @@ curl -X POST http://localhost:8000/api/tenants/<tenant_id>/ingest \
 cd backend && source .venv/bin/activate && python -m pytest tests/ -v
 ```
 
-77 tests, three kinds:
+81 tests, three kinds:
 
 - **Unit tests** (policy engine tier decisions, detection/threat-intel
   pure logic, the real per-vendor log parsers against sample payloads
