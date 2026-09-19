@@ -62,6 +62,16 @@ message is written to the audit log before it's dispatched** — that's
 - **Multi-tenant isolation**: every table is scoped by `tenant_id`, and
   every route checks the caller's role/tenant before returning data. A
   security holder cannot see another company's tenant, even by ID.
+- **Security headers on every response**: `app/security_headers.py`
+  (X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+  Permissions-Policy). HSTS is deliberately left to whatever terminates
+  real TLS in front of this (a reverse proxy/CDN) rather than set here,
+  since forcing it on a plain-HTTP dev instance breaks the browser's
+  ability to fall back to HTTP.
+- **Insecure-default warnings**: the app logs a loud warning at startup
+  if `JWT_SECRET` or `BOOTSTRAP_ADMIN_PASSWORD` are still their
+  placeholder values, rather than silently letting a forgotten `.env`
+  edit become a production credential.
 - **Login brute-force lockout**: `app/ratelimit.py` counts failed attempts
   per email and per source IP in Redis (shared across replicas); either
   one crossing its threshold (defaults: 8/email, 30/IP, 5-minute window)
@@ -165,7 +175,7 @@ action, not a forwarder.
 cd backend && source .venv/bin/activate && python -m pytest tests/ -v
 ```
 
-40 tests, two kinds:
+41 tests, two kinds:
 
 - **Unit tests** (policy engine tier decisions, detection/threat-intel
   pure logic, the AbuseIPDB fallback path, Redis-backed sliding-window
@@ -203,9 +213,17 @@ implemented**:
   (or Splunk, CloudTrail, Azure AD sign-in log, etc.) forwarder needs its
   own field-mapping in `backend/app/agents/integration.py::normalize()`.
 - **Per-tenant hard isolation.** Tenancy today is one shared database with
-  `tenant_id` scoping — logical isolation, enforced at the query layer.
-  Separate databases/encryption keys per customer (the project plan's
-  hardening goal) is a real infrastructure project, not done here.
+  `tenant_id` scoping, enforced at the query layer and covered by tests
+  (a security holder gets a 403 touching another tenant's data, even by
+  ID). Two further layers are deliberately not done here: (1) Postgres
+  row-level security as defense-in-depth against a future query bug —
+  the correct design needs two DB roles, a restricted one for
+  human-request sessions and a privileged one for the agent fleet (which
+  runs outside any per-request tenant context entirely, reacting to bus
+  events), and wiring that role split in without silently breaking agent
+  writes is a real, careful piece of work, not a quick patch; (2)
+  separate databases/encryption keys per customer, which is genuinely an
+  infrastructure project.
 - **Threat intelligence feeds beyond AbuseIPDB.** VirusTotal, file-hash and
   CVE lookups aren't wired up — the call site is isolated so adding one is
   a single-file change, same pattern as the AbuseIPDB integration.

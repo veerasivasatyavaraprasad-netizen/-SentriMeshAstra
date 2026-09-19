@@ -59,6 +59,13 @@ async def test_health(client):
     assert r.json()["status"] == "ok"
 
 
+async def test_responses_carry_standard_security_headers(client):
+    r = await client.get("/api/health")
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["x-frame-options"] == "DENY"
+    assert r.headers["referrer-policy"] == "same-origin"
+
+
 async def test_login_wrong_password_returns_401(client):
     r = await client.post("/api/auth/login", json={"email": ADMIN_EMAIL, "password": "definitely-wrong"})
     assert r.status_code == 401

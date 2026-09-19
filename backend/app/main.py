@@ -23,13 +23,38 @@ from app.routers import (
     reports,
     tenants,
 )
+from app.security_headers import SecurityHeadersMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 settings = get_settings()
+logger = logging.getLogger("sentrimesh.main")
+
+_INSECURE_DEFAULTS = {
+    "JWT_SECRET": "change-me-in-production-this-is-not-a-real-secret",
+    "BOOTSTRAP_ADMIN_PASSWORD": "ChangeMe!12345",
+}
+
+
+def _warn_on_insecure_defaults() -> None:
+    """A loud, impossible-to-miss log line beats a silent footgun — this
+    is exactly the kind of thing 'our own platform must be secure' means
+    in practice: don't let a demo default quietly become a production
+    credential because nobody noticed the .env was never edited."""
+    if settings.jwt_secret == _INSECURE_DEFAULTS["JWT_SECRET"]:
+        logger.warning(
+            "!! JWT_SECRET is still the placeholder default. Every token this instance issues is forgeable "
+            "by anyone who reads this repo. Set a real JWT_SECRET before this is reachable by anyone but you."
+        )
+    if settings.bootstrap_admin_password == _INSECURE_DEFAULTS["BOOTSTRAP_ADMIN_PASSWORD"]:
+        logger.warning(
+            "!! BOOTSTRAP_ADMIN_PASSWORD is still the placeholder default. Change it (and log in and change "
+            "it again if this instance already booted with it) before this is reachable by anyone but you."
+        )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _warn_on_insecure_defaults()
     await run_migrations()
     async with AsyncSessionLocal() as db:
         await bootstrap_admin(db)
@@ -40,9 +65,7 @@ async def lifespan(app: FastAPI):
     app.state.fleet = fleet
     app.state.bus = bus
 
-    logging.getLogger("sentrimesh.main").info(
-        "SentriMeshAstra online. Bootstrap admin: %s", settings.bootstrap_admin_email
-    )
+    logger.info("SentriMeshAstra online. Bootstrap admin: %s", settings.bootstrap_admin_email)
     yield
 
     await fleet.stop()
@@ -51,6 +74,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SentriMeshAstra", version="0.1.0", lifespan=lifespan)
 
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
