@@ -89,7 +89,6 @@ export const api = {
 
   platformAudit: () => request("/api/admin/platform-audit"),
 
-  simulateAttack: (tenantId) => request(`/api/tenants/${tenantId}/demo/simulate-attack`, { method: "POST" }),
   requestExposureScan: (tenantId, domain) =>
     request(`/api/tenants/${tenantId}/exposure-scan?domain=${encodeURIComponent(domain)}`, { method: "POST" }),
 };

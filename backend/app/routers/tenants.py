@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, require_admin
 from app.database import get_db
-from app.models import ConnectorConfig, Tenant, User, UserRole
+from app.models import Tenant, User, UserRole
 from app.schemas import KillSwitchUpdate, TenantCreate, TenantOut
 
 router = APIRouter(prefix="/api/tenants", tags=["tenants"])
@@ -20,11 +20,8 @@ async def create_tenant(payload: TenantCreate, db: AsyncSession = Depends(get_db
     db.add(tenant)
     await db.commit()
     await db.refresh(tenant)
-
-    # Register the synthetic demo connector automatically so a new tenant
-    # has something to see in the console before wiring a real SIEM.
-    db.add(ConnectorConfig(tenant_id=tenant.id, connector_type="synthetic_demo", display_name="Demo feed"))
-    await db.commit()
+    # No connector is created here — the console has nothing to show until
+    # a real one is added under Settings and starts actually receiving data.
     return tenant
 
 

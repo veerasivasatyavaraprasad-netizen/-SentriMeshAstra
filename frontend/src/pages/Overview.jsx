@@ -33,20 +33,6 @@ export function Overview() {
     }
   }
 
-  async function simulateAttack() {
-    setBusy(true);
-    setMessage("");
-    try {
-      await api.simulateAttack(tenantId);
-      setMessage("Synthetic attack scenario fired. Watch Incidents and Approvals for the pipeline to react.");
-      setTimeout(load, 1500);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   if (!tenantId) {
     return <div className="panel">Select a company from the sidebar to see its overview.</div>;
   }
@@ -58,9 +44,6 @@ export function Overview() {
       <div className="topbar">
         <h1>Overview</h1>
         <div className="row">
-          <button onClick={simulateAttack} disabled={busy}>
-            Simulate demo attack
-          </button>
           {overview.kill_switch_engaged ? (
             <button className="primary" onClick={() => toggleKillSwitch(false)} disabled={busy}>
               Disengage kill switch
@@ -101,7 +84,12 @@ export function Overview() {
 
       <div className="panel">
         <h2>Coverage health</h2>
-        {overview.connector_health.length === 0 && <div className="muted">No connectors configured yet.</div>}
+        {overview.connector_health.length === 0 && (
+          <div className="muted">
+            No connectors yet — add one under Settings to start seeing real data. Nothing in this console is
+            simulated or fabricated; there's nothing to show until a real source is connected.
+          </div>
+        )}
         <table>
           <thead>
             <tr>

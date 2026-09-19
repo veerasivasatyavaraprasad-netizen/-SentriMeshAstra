@@ -148,9 +148,9 @@ export function Settings() {
           )}
 
           <p className="muted" style={{ marginTop: 10 }}>
-            The demo feed is added automatically for every new company and stays console-only (your own login, not
-            a token). A real forwarder authenticates with its own connector token, issued above — never a human's
-            session.
+            Nothing appears in this console until a real connector is added here and actually starts pushing
+            data — there is no demo or simulated feed. Each connector authenticates its pushes with its own
+            token, issued above.
           </p>
         </div>
       )}

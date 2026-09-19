@@ -124,20 +124,32 @@ migration with `alembic revision --autogenerate -m "..."` from `backend/`
 (with `DATABASE_URL` set) and commit the generated file — the app applies
 it automatically on its next startup.
 
-### Try the full pipeline without any real log source
+### There is no demo or simulated data
 
-1. Log in as admin, create a company (Settings → "onboard a new company").
-   A synthetic demo connector is attached automatically.
-2. Go to Overview and click **Simulate demo attack**. This fires a
-   realistic brute-force scenario (6 failed logins + 1 success from a
-   demo "malicious" IP) through the real pipeline.
-3. Watch Incidents (an incident opens, gets enriched, gets classified
-   high-severity), then Approvals (a one-tap `block_ip` action is
-   waiting), then Agent Activity (every message any agent sent, in order).
-4. Approve it — the dry-run executor logs what it *would* do. Generate a
-   report from the Reports page to see the daily-report narrative.
-5. Try Overview → **Engage kill switch**, then simulate another attack and
-   approve its action: execution is blocked and the audit log records why.
+A freshly onboarded company starts completely empty — no connector, no
+events, no incidents — until you add a real connector under Settings and
+it starts actually receiving data. There used to be a "Simulate demo
+attack" button and an auto-created synthetic connector for trying the
+pipeline without a real log source; both were removed on purpose, so
+nothing in this console is ever fabricated. To see the pipeline run,
+either wire up a real SIEM/log source (see "Connecting a real log
+source" below) or, for local development only, push a real-shaped event
+through the real ingest endpoint yourself with a connector token you
+mint from Settings:
+
+```bash
+curl -X POST http://localhost:8000/api/tenants/<tenant_id>/ingest \
+  -H "Authorization: Bearer <connector_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "test", "event_type": "login_failed", "data": {"src_ip": "203.0.113.7", "user": "root"}}'
+```
+
+That's real traffic through the real pipeline — Detection correlates it,
+Threat Intelligence looks the IP up against a real source (AbuseIPDB, if
+configured — see below), Orchestrator classifies it, Response proposes an
+action. Nothing about that flow is different from what a real forwarder
+triggers; it's just you sending one event by hand instead of Wazuh
+sending thousands.
 
 ### Real response execution (`block_ip`)
 
@@ -151,12 +163,18 @@ machine *is* your enforcement point (an edge/gateway host), never a shared
 app server. Every other action type still dry-runs regardless of this
 flag, since no other executor exists yet.
 
-### Real threat intelligence
+### Threat intelligence — real only, no fallback
 
-Set `ABUSEIPDB_API_KEY` and the Threat Intelligence agent looks up real IP
-reputation via the AbuseIPDB API instead of the local demo blocklist. Any
-failure (timeout, bad response, no key) falls back to the local list
-automatically — a flaky third party never breaks the pipeline.
+Set `ABUSEIPDB_API_KEY` and the Threat Intelligence agent looks up real
+IP reputation via the AbuseIPDB API. Without a key configured, or if a
+lookup fails (timeout, bad response), enrichment honestly reports
+`unknown` — there is no local blocklist standing in as if it were real
+data. That's a real, visible consequence: without a key, the Orchestrator
+can't confirm an IP is malicious, so a brute-force incident still opens
+and gets logged, but Response can only `notify` (auto, tier-1) rather
+than propose a `block_ip` action, since nothing confirmed the intent. Set
+a real key to get real confirmed-malicious classification and the
+one-tap block proposal that comes with it.
 
 ### Connecting a real log source (Wazuh, etc.)
 
@@ -165,9 +183,10 @@ Settings → "Add connector & issue token" mints a per-connector secret
 `POST /api/tenants/{tenant_id}/ingest` with `Authorization: Bearer
 <token>` — no human session token involved. A leaked token is remediated
 by rotating it (invalidates the old one immediately) rather than needing
-to delete and recreate the connector. The console's own "Simulate demo
-attack" button keeps using your logged-in session, since it's a human
-action, not a forwarder.
+to delete and recreate the connector. Ingest accepts only a connector
+token — deliberately no human-JWT fallback, so every event in the
+pipeline traces back to a data source the tenant registered and can
+revoke, never to someone hand-typing a payload into their own session.
 
 ### Tests
 
@@ -175,19 +194,28 @@ action, not a forwarder.
 cd backend && source .venv/bin/activate && python -m pytest tests/ -v
 ```
 
-41 tests, two kinds:
+45 tests, two kinds:
 
 - **Unit tests** (policy engine tier decisions, detection/threat-intel
-  pure logic, the AbuseIPDB fallback path, Redis-backed sliding-window
-  counters — including a same-counter-from-two-connections test standing
-  in for two backend replicas — login lockout logic, and, when run as
-  root with `iptables` available, a real block-then-rollback round trip
-  against the host's firewall). A handful skip automatically if Redis
-  isn't reachable, rather than failing for an environment gap.
+  pure logic, the AbuseIPDB no-fallback behavior — including a regression
+  test locking in that RFC 5737 test-net ranges must still reach
+  AbuseIPDB, since Python's `ipaddress.is_private` would otherwise
+  silently swallow them — Redis-backed sliding-window counters, including
+  a same-counter-from-two-connections test standing in for two backend
+  replicas, login lockout logic, and, when run as root with `iptables`
+  available, a real block-then-rollback round trip against the host's
+  firewall). A handful skip automatically if Redis isn't reachable,
+  rather than failing for an environment gap.
 - **API integration tests** (`tests/test_api_integration.py`) drive the
   real FastAPI app — real Alembic migrations, a real Postgres database, a
   real Redis-backed agent bus with all 8 agents actually running — via
-  `httpx.AsyncClient`. They cover tenant onboarding and isolation, the
+  `httpx.AsyncClient`, pushing events through the real connector-token
+  ingest endpoint (never a demo/simulate route — there isn't one). The
+  one thing mocked is the third-party AbuseIPDB HTTP call itself, at the
+  test boundary, so the suite doesn't need network access or a committed
+  API key; everything downstream of that mock (severity scoring, the
+  block_ip proposal, the approval it creates) is the app's real,
+  unmocked logic. They cover tenant onboarding and isolation, the
   full attack-to-pending-approval pipeline, approve/reject/rollback,
   kill-switch enforcement (including the security-holder-can't-disengage
   rule), report generation, per-tenant activity scoping, and admin-only
@@ -208,9 +236,10 @@ implemented**:
   (AWS Security Groups, Azure AD, CrowdStrike, etc.) still needs its own
   `ActionExecutor` subclass — the interface and the rollback contract are
   proven, the rest of the integrations aren't written.
-- **Real SIEM connectors.** Only a generic webhook (`POST
-  /api/tenants/{id}/ingest`) and a synthetic demo feed exist. A real Wazuh
-  (or Splunk, CloudTrail, Azure AD sign-in log, etc.) forwarder needs its
+- **Real SIEM connectors.** Only a generic, token-authenticated webhook
+  (`POST /api/tenants/{id}/ingest`) exists — no demo/synthetic feed, real
+  events only. A real Wazuh (or Splunk, CloudTrail, Azure AD sign-in log,
+  etc.) forwarder needs its
   own field-mapping in `backend/app/agents/integration.py::normalize()`.
 - **Per-tenant hard isolation.** Tenancy today is one shared database with
   `tenant_id` scoping, enforced at the query layer and covered by tests

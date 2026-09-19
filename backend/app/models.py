@@ -102,7 +102,7 @@ class ConnectorConfig(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
-    connector_type: Mapped[str] = mapped_column(String, nullable=False)  # e.g. "wazuh", "synthetic_demo"
+    connector_type: Mapped[str] = mapped_column(String, nullable=False)  # e.g. "wazuh", "splunk", "cloudtrail"
     display_name: Mapped[str] = mapped_column(String, default="")
     config: Mapped[dict] = mapped_column(JSON, default=dict)  # non-secret config only
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -110,9 +110,8 @@ class ConnectorConfig(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # SHA-256 of the connector's bearer secret token — never the raw token
-    # itself (see app/connector_auth.py). Null for connectors that only
-    # ever get pushed to by the console under a human's own JWT (e.g. the
-    # synthetic_demo connector).
+    # itself (see app/connector_auth.py). Every connector gets one at
+    # creation; ingest requires it.
     token_hash: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
 
 

@@ -4,12 +4,22 @@ via the `client` fixture in conftest.py — not mocks, not curl scripts run
 by hand. This is what previously only got exercised manually during
 development; codifying it here means a regression gets caught by `pytest`
 instead of by someone noticing the dashboard looks wrong.
+
+There is no synthetic/demo data path in the app itself — every event here
+goes in through a real connector token via POST .../ingest, exactly as a
+real log forwarder would. The one thing tests mock is the third-party
+AbuseIPDB HTTP call (app.connectors.threat_feed._abuseipdb_lookup) so the
+suite doesn't depend on network access or a committed real API key —
+that's a test-boundary mock of an external vendor API, not fabricated
+data inside the product.
 """
 import asyncio
 import os
 import uuid
 
 import pytest
+
+from app.connectors import threat_feed
 
 ADMIN_EMAIL = os.environ["BOOTSTRAP_ADMIN_EMAIL"]
 ADMIN_PASSWORD = os.environ["BOOTSTRAP_ADMIN_PASSWORD"]
@@ -38,11 +48,64 @@ async def _create_tenant(client, admin_token, name="Test Co"):
     return r.json()
 
 
+async def _create_connector(client, admin_token, tenant_id, connector_type="generic"):
+    r = await client.post(
+        f"/api/tenants/{tenant_id}/connectors",
+        json={"connector_type": connector_type, "display_name": connector_type},
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200, r.text
+    return r.json()  # includes ["token"], shown once, exactly as the console would show it
+
+
+async def _push_bruteforce(client, tenant_id, connector_token, ip="198.51.100.23", user="root"):
+    """Pushes the same real event shape a real log forwarder would send —
+    through the real connector-token-authenticated ingest endpoint — to
+    drive the detection -> enrichment -> classification -> response
+    pipeline. IANA reserves 198.51.100.0/24 (TEST-NET-2) for exactly this:
+    documentation and testing, never a real host."""
+    headers = {"Authorization": f"Bearer {connector_token}"}
+    for _ in range(6):
+        r = await client.post(
+            f"/api/tenants/{tenant_id}/ingest",
+            json={"source": "test", "event_type": "login_failed", "data": {"src_ip": ip, "user": user}},
+            headers=headers,
+        )
+        assert r.status_code == 200, r.text
+    r = await client.post(
+        f"/api/tenants/{tenant_id}/ingest",
+        json={"source": "test", "event_type": "login_success", "data": {"src_ip": ip, "user": user}},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+
+
+@pytest.fixture
+def mock_abuseipdb_malicious(monkeypatch):
+    """Stands in for the real AbuseIPDB HTTP call so tests don't depend on
+    network access or a committed real API key. Everything downstream of
+    this (severity scoring, the block_ip recommendation, the approval it
+    creates) is the app's real, unmocked logic reacting to this one
+    external-vendor response. Also fakes a configured API key — otherwise
+    lookup_ip short-circuits at "no key configured" before ever reaching
+    the mocked call, same as it would in a real unconfigured deployment."""
+
+    class _FakeSettingsWithKey:
+        abuseipdb_api_key = "test-fake-key-mocked-below"
+
+    monkeypatch.setattr(threat_feed, "get_settings", lambda: _FakeSettingsWithKey())
+
+    async def fake_lookup(ip, api_key):
+        return {"verdict": "malicious", "score": 92, "tags": ["credential-stuffing"], "source": "abuseipdb"}
+
+    monkeypatch.setattr(threat_feed, "_abuseipdb_lookup", fake_lookup)
+
+
 async def _wait_until(predicate, *, timeout=6.0, interval=0.2):
     """Poll `predicate` (an async callable returning truthy/falsy) until
     it's truthy or the timeout elapses. Used instead of a flat sleep to
     wait for the async detection -> enrichment -> classification ->
-    response pipeline to finish reacting to a simulated attack."""
+    response pipeline to finish reacting to a real ingested event."""
     elapsed = 0.0
     while elapsed < timeout:
         result = await predicate()
@@ -97,12 +160,50 @@ async def test_admin_can_onboard_tenant_and_security_holder_is_scoped(client):
     assert r.status_code == 403
 
 
-async def test_full_attack_pipeline_reaches_a_pending_approval(client):
+async def test_a_new_tenant_has_no_connectors_and_no_data(client):
+    """There is no demo/synthetic feed anymore — a freshly onboarded
+    company starts completely empty until a real connector is added."""
     admin_token = await _admin_token(client)
     tenant = await _create_tenant(client, admin_token)
 
-    r = await client.post(f"/api/tenants/{tenant['id']}/demo/simulate-attack", headers=_auth(admin_token))
-    assert r.status_code == 200
+    r = await client.get(f"/api/tenants/{tenant['id']}/connectors", headers=_auth(admin_token))
+    assert r.json() == []
+
+    r = await client.get(f"/api/tenants/{tenant['id']}/incidents", headers=_auth(admin_token))
+    assert r.json() == []
+
+    r = await client.get(f"/api/tenants/{tenant['id']}/overview", headers=_auth(admin_token))
+    overview = r.json()
+    assert overview["open_incidents"] == 0
+    assert overview["connector_health"] == []
+
+
+async def test_ingest_without_any_connector_token_is_rejected(client):
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+
+    # No Authorization header at all.
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/ingest",
+        json={"source": "test", "event_type": "login_failed", "data": {"src_ip": "198.51.100.23"}},
+    )
+    assert r.status_code == 401
+
+    # A human's own JWT doesn't work either — only a connector token does.
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/ingest",
+        json={"source": "test", "event_type": "login_failed", "data": {}},
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 401
+
+
+async def test_full_attack_pipeline_reaches_a_pending_approval(client, mock_abuseipdb_malicious):
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+    connector = await _create_connector(client, admin_token, tenant["id"], "wazuh")
+
+    await _push_bruteforce(client, tenant["id"], connector["token"])
 
     async def incident_fully_classified():
         # An incident exists as soon as Detection opens it, at default
@@ -122,6 +223,7 @@ async def test_full_attack_pipeline_reaches_a_pending_approval(client):
     assert incident["severity"] in ("high", "critical")
     assert any("T1110" in t for t in incident["mitre_techniques"])
     assert incident["enrichment"]["ip_reputation"]["198.51.100.23"]["verdict"] == "malicious"
+    assert incident["enrichment"]["ip_reputation"]["198.51.100.23"]["source"] == "abuseipdb"
 
     async def approval_exists():
         resp = await client.get(f"/api/tenants/{tenant['id']}/approvals", headers=_auth(admin_token))
@@ -135,10 +237,40 @@ async def test_full_attack_pipeline_reaches_a_pending_approval(client):
     assert approvals[0]["action"]["tier"] == "tier2_one_tap"
 
 
-async def test_approve_action_executes_as_dry_run_and_can_be_rolled_back(client):
+async def test_without_a_real_threat_intel_key_brute_force_only_notifies(client):
+    """No AbuseIPDB key is configured for this test run (no
+    mock_abuseipdb_malicious fixture here) — enrichment honestly reports
+    'unknown', so the Orchestrator can't confirm malicious intent and the
+    Response agent only notifies (tier-1, auto) rather than proposing a
+    block. This is the real, honest behavior without a real threat-intel
+    source connected — not a gap papered over by fake data."""
     admin_token = await _admin_token(client)
     tenant = await _create_tenant(client, admin_token)
-    await client.post(f"/api/tenants/{tenant['id']}/demo/simulate-attack", headers=_auth(admin_token))
+    connector = await _create_connector(client, admin_token, tenant["id"])
+
+    await _push_bruteforce(client, tenant["id"], connector["token"], ip="203.0.113.44")
+
+    async def incident_fully_classified():
+        resp = await client.get(f"/api/tenants/{tenant['id']}/incidents", headers=_auth(admin_token))
+        data = resp.json()
+        if data and data[0]["severity"] != "low":
+            return data
+        return None
+
+    incidents = await _wait_until(incident_fully_classified)
+    assert incidents[0]["enrichment"]["ip_reputation"]["203.0.113.44"]["verdict"] == "unknown"
+
+    # No block_ip proposal, and definitely nothing waiting on approval,
+    # since "notify" is a tier-1 action that runs immediately.
+    r = await client.get(f"/api/tenants/{tenant['id']}/approvals", headers=_auth(admin_token))
+    assert r.json() == []
+
+
+async def test_approve_action_executes_as_dry_run_and_can_be_rolled_back(client, mock_abuseipdb_malicious):
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+    connector = await _create_connector(client, admin_token, tenant["id"])
+    await _push_bruteforce(client, tenant["id"], connector["token"])
 
     async def get_pending():
         resp = await client.get(f"/api/tenants/{tenant['id']}/approvals", headers=_auth(admin_token))
@@ -149,7 +281,7 @@ async def test_approve_action_executes_as_dry_run_and_can_be_rolled_back(client)
 
     r = await client.post(
         f"/api/tenants/{tenant['id']}/approvals/{approval['id']}/decide",
-        json={"approve": True, "note": "looks malicious"},
+        json={"approve": True, "note": "confirmed malicious"},
         headers=_auth(admin_token),
     )
     assert r.status_code == 200, r.text
@@ -173,10 +305,11 @@ async def test_approve_action_executes_as_dry_run_and_can_be_rolled_back(client)
     assert r.status_code == 400
 
 
-async def test_reject_action_leaves_it_unexecuted(client):
+async def test_reject_action_leaves_it_unexecuted(client, mock_abuseipdb_malicious):
     admin_token = await _admin_token(client)
     tenant = await _create_tenant(client, admin_token)
-    await client.post(f"/api/tenants/{tenant['id']}/demo/simulate-attack", headers=_auth(admin_token))
+    connector = await _create_connector(client, admin_token, tenant["id"])
+    await _push_bruteforce(client, tenant["id"], connector["token"])
 
     async def get_pending():
         resp = await client.get(f"/api/tenants/{tenant['id']}/approvals", headers=_auth(admin_token))
@@ -196,7 +329,7 @@ async def test_reject_action_leaves_it_unexecuted(client):
     assert decided["action"]["executed"] is False
 
 
-async def test_kill_switch_blocks_execution_even_after_approval(client):
+async def test_kill_switch_blocks_execution_even_after_approval(client, mock_abuseipdb_malicious):
     admin_token = await _admin_token(client)
     tenant = await _create_tenant(client, admin_token)
 
@@ -206,7 +339,8 @@ async def test_kill_switch_blocks_execution_even_after_approval(client):
     assert r.status_code == 200
     assert r.json()["kill_switch_engaged"] is True
 
-    await client.post(f"/api/tenants/{tenant['id']}/demo/simulate-attack", headers=_auth(admin_token))
+    connector = await _create_connector(client, admin_token, tenant["id"])
+    await _push_bruteforce(client, tenant["id"], connector["token"])
 
     async def get_pending():
         resp = await client.get(f"/api/tenants/{tenant['id']}/approvals", headers=_auth(admin_token))
@@ -264,12 +398,13 @@ async def test_generate_report_now_returns_a_summary(client):
     assert isinstance(report["summary"], str) and len(report["summary"]) > 0
 
 
-async def test_activity_log_is_scoped_per_tenant(client):
+async def test_activity_log_is_scoped_per_tenant(client, mock_abuseipdb_malicious):
     admin_token = await _admin_token(client)
     tenant_a = await _create_tenant(client, admin_token, name="Tenant A")
     tenant_b = await _create_tenant(client, admin_token, name="Tenant B")
+    connector_a = await _create_connector(client, admin_token, tenant_a["id"])
 
-    await client.post(f"/api/tenants/{tenant_a['id']}/demo/simulate-attack", headers=_auth(admin_token))
+    await _push_bruteforce(client, tenant_a["id"], connector_a["token"])
 
     async def has_activity(tenant_id):
         resp = await client.get(f"/api/tenants/{tenant_id}/activity", headers=_auth(admin_token))
@@ -331,29 +466,26 @@ async def test_ingest_rejects_malformed_events_gracefully(client, bad_ip):
     crash the ingestion pipeline or produce a 500."""
     admin_token = await _admin_token(client)
     tenant = await _create_tenant(client, admin_token)
+    connector = await _create_connector(client, admin_token, tenant["id"])
     r = await client.post(
         f"/api/tenants/{tenant['id']}/ingest",
         json={"source": "test", "event_type": "login_failed", "data": {"src_ip": bad_ip}},
-        headers=_auth(admin_token),
+        headers={"Authorization": f"Bearer {connector['token']}"},
     )
     assert r.status_code == 200
 
 
-async def test_connector_token_authenticates_ingest_without_a_human_jwt(client):
+async def test_connector_token_lifecycle_and_health_tracking(client):
     """The whole point of connector tokens: a real forwarder (Wazuh, etc.)
-    authenticates with its own secret, never a human's session token."""
+    authenticates with its own secret, never a human's session token — and
+    a leaked one is remediated by rotation, not by deleting the connector."""
     admin_token = await _admin_token(client)
     tenant = await _create_tenant(client, admin_token)
 
-    r = await client.post(
-        f"/api/tenants/{tenant['id']}/connectors",
-        json={"connector_type": "wazuh", "display_name": "Prod Wazuh"},
-        headers=_auth(admin_token),
-    )
-    assert r.status_code == 200, r.text
-    connector = r.json()
+    connector = await _create_connector(client, admin_token, tenant["id"], "wazuh")
     assert connector["token"].startswith("smac_")
     assert connector["has_token"] is True
+    assert connector["last_event_at"] is None
 
     # The token alone authenticates — no human Authorization at all otherwise.
     r = await client.post(
@@ -401,26 +533,3 @@ async def test_connector_token_authenticates_ingest_without_a_human_jwt(client):
         headers={"Authorization": f"Bearer {new_token}"},
     )
     assert r.status_code == 200
-
-
-async def test_demo_attack_updates_the_demo_connectors_health(client):
-    """Regression test for a real bug: simulate-attack and the generic
-    ingest route never attached connector_id to the events they published,
-    so Overview's "Coverage health" panel showed every connector as having
-    no events, forever, even right after a successful simulated attack."""
-    admin_token = await _admin_token(client)
-    tenant = await _create_tenant(client, admin_token)
-
-    r = await client.get(f"/api/tenants/{tenant['id']}/connectors", headers=_auth(admin_token))
-    demo_connector = next(c for c in r.json() if c["connector_type"] == "synthetic_demo")
-    assert demo_connector["last_event_at"] is None
-
-    await client.post(f"/api/tenants/{tenant['id']}/demo/simulate-attack", headers=_auth(admin_token))
-
-    async def demo_connector_seen():
-        resp = await client.get(f"/api/tenants/{tenant['id']}/connectors", headers=_auth(admin_token))
-        c = next(x for x in resp.json() if x["connector_type"] == "synthetic_demo")
-        return c if c["last_event_at"] else None
-
-    seen = await _wait_until(demo_connector_seen)
-    assert seen["last_event_at"] is not None

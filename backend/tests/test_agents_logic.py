@@ -10,19 +10,17 @@ def test_normalize_maps_common_field_aliases():
     assert normalized["user"] == "bob"
 
 
-async def test_lookup_ip_flags_known_demo_malicious_ip():
-    result = await lookup_ip("198.51.100.23")
-    assert result["verdict"] == "malicious"
-
-
 async def test_lookup_ip_treats_private_ranges_as_clean():
     result = await lookup_ip("10.0.0.5")
     assert result["verdict"] == "clean"
 
 
-async def test_lookup_ip_unknown_for_unseen_public_ip():
+async def test_lookup_ip_unknown_for_public_ip_with_no_api_key_configured():
+    """No fabricated verdict when there's no real threat-intel source
+    configured — 'unknown' is the honest answer, not a guess."""
     result = await lookup_ip("8.8.8.8")
     assert result["verdict"] == "unknown"
+    assert result["source"] == "none"
 
 
 def test_recommend_action_blocks_ip_for_malicious_bruteforce():
