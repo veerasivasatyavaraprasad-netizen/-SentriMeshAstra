@@ -152,6 +152,19 @@ class ReportOut(BaseModel):
         from_attributes = True
 
 
+class PackageSpec(BaseModel):
+    """One dependency to check for known vulnerabilities, in OSV.dev's own
+    ecosystem naming (e.g. "PyPI", "npm", "Go", "crates.io", "Maven")."""
+
+    ecosystem: str
+    name: str
+    version: str
+
+
+class DependencyScanRequest(BaseModel):
+    packages: list[PackageSpec] = Field(min_length=1, max_length=200)
+
+
 class KillSwitchUpdate(BaseModel):
     engaged: bool
     reason: str = ""

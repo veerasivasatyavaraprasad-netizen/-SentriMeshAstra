@@ -92,11 +92,16 @@ def mock_abuseipdb_malicious(monkeypatch):
 
     class _FakeSettingsWithKey:
         abuseipdb_api_key = "test-fake-key-mocked-below"
+        virustotal_api_key = None
+        otx_api_key = None
+        greynoise_api_key = None
+        shodan_api_key = None
+        abusech_auth_key = None
 
     monkeypatch.setattr(threat_feed, "get_settings", lambda: _FakeSettingsWithKey())
 
     async def fake_lookup(ip, api_key):
-        return {"verdict": "malicious", "score": 92, "tags": ["credential-stuffing"], "source": "abuseipdb"}
+        return {"verdict": "malicious", "detail": "AbuseIPDB confidence 92/100", "raw": {"score": 92, "total_reports": 40}}
 
     monkeypatch.setattr(threat_feed, "_abuseipdb_lookup", fake_lookup)
 
@@ -461,6 +466,47 @@ async def test_exposure_scan_produces_a_finding_incident(client):
 
     incidents = await _wait_until(has_incident)
     assert unreachable_domain in incidents[0]["title"]
+
+
+async def test_dependency_scan_finds_a_real_shaped_vulnerability(client, monkeypatch):
+    """End-to-end: POST .../dependency-scan -> ExposureAgent -> OSV.dev +
+    GitHub Advisory Database (mocked here at the HTTP layer, since this
+    sandbox can't reach either) -> a real incident with the finding."""
+    from app.connectors import vuln_scanner
+
+    async def fake_osv(ecosystem, name, version):
+        if name == "vulnerable-pkg":
+            return [{"id": "GHSA-test-0000", "summary": "Remote code execution", "severity": "critical", "source": "osv.dev"}]
+        return []
+
+    async def fake_github(ecosystem, name):
+        return []
+
+    monkeypatch.setattr(vuln_scanner, "_query_osv", fake_osv)
+    monkeypatch.setattr(vuln_scanner, "_query_github_advisories", fake_github)
+
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/dependency-scan",
+        json={"packages": [{"ecosystem": "PyPI", "name": "vulnerable-pkg", "version": "1.0.0"}, {"ecosystem": "PyPI", "name": "safe-pkg", "version": "2.0.0"}]},
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200
+    assert r.json()["package_count"] == 2
+
+    async def dependency_scan_incident():
+        resp = await client.get(f"/api/tenants/{tenant['id']}/incidents", headers=_auth(admin_token))
+        matches = [i for i in resp.json() if i["title"].startswith("Dependency scan:")]
+        return matches if matches else None
+
+    incidents = await _wait_until(dependency_scan_incident)
+    incident = incidents[0]
+    assert "1 vulnerable package(s) of 2 checked" in incident["title"]
+    assert incident["severity"] == "critical"
+    assert "GHSA-test-0000" in incident["description"]
+    assert incident["enrichment"]["dependency_findings"][0]["vulnerabilities"]
 
 
 @pytest.mark.parametrize("bad_ip", ["not-an-ip", "203.0.113.1; DROP TABLE users;--"])

@@ -28,7 +28,7 @@ below. Read that section before pitching this to a customer.
 | 2 | Integration | `backend/app/agents/integration.py` | Normalizes incoming events, tracks connector health |
 | 3 | Detection & Triage | `backend/app/agents/detection.py` | Correlates events, dedups ongoing campaigns, opens incidents, maps MITRE ATT&CK |
 | 4 | Threat Intelligence | `backend/app/agents/threat_intel.py` | Looks up IP/indicator reputation, enriches incidents |
-| 5 | Exposure | `backend/app/agents/exposure.py` | Scans the tenant's own verified domain for missing hardening |
+| 5 | Exposure | `backend/app/agents/exposure.py` | Scans the tenant's own verified domain for missing hardening, plus real OSINT search and dependency vulnerability checks |
 | 6 | Response | `backend/app/agents/response.py` | Proposes actions, executes tier-1 automatically, requests approval otherwise, supports rollback |
 | 7 | Compliance & Reporting | `backend/app/agents/reporting.py` | Daily reports, email notifications |
 | 8 | Guardian | `backend/app/agents/guardian.py` | Independently re-checks every proposed action's tier, watches connector health, is the kill switch's home |
@@ -177,18 +177,59 @@ machine *is* your enforcement point (an edge/gateway host), never a shared
 app server. Every other action type still dry-runs regardless of this
 flag, since no other executor exists yet.
 
-### Threat intelligence — real only, no fallback
+### Threat intelligence — real only, no fallback, multi-source
 
-Set `ABUSEIPDB_API_KEY` and the Threat Intelligence agent looks up real
-IP reputation via the AbuseIPDB API. Without a key configured, or if a
-lookup fails (timeout, bad response), enrichment honestly reports
+Set any subset of `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `OTX_API_KEY`
+(AlienVault OTX), `GREYNOISE_API_KEY`, `SHODAN_API_KEY`, and
+`ABUSECH_AUTH_KEY` (ThreatFox) and the Threat Intelligence agent queries
+every one configured, in parallel, for real IP reputation
+(`backend/app/connectors/threat_feed.py`). A source with no key
+configured is simply skipped; a source whose call fails (timeout, bad
+response, rate limit) degrades to "no data from this source," not a
+failure of the whole lookup — the other configured sources still get a
+say. The aggregate verdict is `malicious` if any source says so (a
+confirmed ThreatFox malware-family match, or two-plus VirusTotal engines
+agreeing, is never averaged away by a "clean" from a different source),
+`suspicious` if any source flags it short of that bar, `clean` if every
+reachable source came back clean (or GreyNoise identifies it as a known
+business service via RIOT), and an honest `unknown` if nothing is
+configured or every configured source's call failed. Shodan is
+deliberately never the sole reason for a `malicious` verdict — it profiles
+what's running on a host (open ports, known CVEs on exposed services),
+which is real exposure context, not a reputation claim about the traffic
+itself. Without any source configured, enrichment honestly reports
 `unknown` — there is no local blocklist standing in as if it were real
-data. That's a real, visible consequence: without a key, the Orchestrator
-can't confirm an IP is malicious, so a brute-force incident still opens
-and gets logged, but Response can only `notify` (auto, tier-1) rather
-than propose a `block_ip` action, since nothing confirmed the intent. Set
-a real key to get real confirmed-malicious classification and the
-one-tap block proposal that comes with it.
+data — and Response can only `notify` (auto, tier-1) for a brute-force
+incident rather than propose a `block_ip` action, since nothing confirmed
+the intent. Set real keys to get real confirmed-malicious classification
+and the one-tap block proposal that comes with it.
+
+### Dependency vulnerability scanning (OSV.dev + GitHub Advisory Database)
+
+`POST /api/tenants/{tenant_id}/dependency-scan` takes a list of
+`{ecosystem, name, version}` packages the tenant declares — e.g. lines
+parsed from their own `requirements.txt`/`package.json` — and the
+Exposure agent checks each against two real, free sources
+(`backend/app/connectors/vuln_scanner.py`): OSV.dev (Google-run,
+fully unauthenticated, aggregates GitHub Security Advisories plus every
+major ecosystem's own advisory database) and the GitHub Advisory Database
+itself (public REST API, no token required). The same CVE/GHSA surfaced
+by both sources is deduplicated, not double-counted; a source that fails
+is named as unreachable in the result rather than silently counted as "no
+known vulnerabilities." Neither source needs an API key — this capability
+works with zero configuration.
+
+### Public-exposure OSINT search (SerpAPI)
+
+Set `SERPAPI_API_KEY` and every domain exposure scan also runs one real
+Google search (via SerpAPI), restricted to the tenant's own domain, for
+the file types and directory-listing pattern that most commonly indicate
+an accidental public exposure (`site:{domain} (filetype:env OR
+filetype:sql OR filetype:log OR intitle:"index of")`) — the same
+non-intrusive technique real attack-surface-management tools use, never
+anything beyond a plain search of a domain the tenant already told us
+they own. A real hit becomes a real exposure finding with the actual
+indexed URL; without the key, this one step is simply skipped.
 
 ### Impossible-travel detection (real algorithm, not a heuristic guess)
 
@@ -311,7 +352,7 @@ curl -X POST http://localhost:8000/api/tenants/<tenant_id>/ingest \
 cd backend && source .venv/bin/activate && python -m pytest tests/ -v
 ```
 
-81 tests, three kinds:
+103 tests, three kinds:
 
 - **Unit tests** (policy engine tier decisions, detection/threat-intel
   pure logic, the real per-vendor log parsers against sample payloads

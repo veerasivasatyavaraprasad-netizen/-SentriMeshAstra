@@ -22,6 +22,29 @@ os.environ.setdefault("JWT_SECRET", "test-only-secret-never-use-in-production")
 os.environ.setdefault("ENABLE_REAL_RESPONSE_EXECUTION", "false")
 os.environ.setdefault("TESTING", "true")
 
+# Force-blank every optional external-integration key — not setdefault,
+# an outright override. Settings loads backend/.env (pydantic-settings'
+# env_file), and OS environment values there take priority over it, but
+# only for keys actually set here; a real developer .env sitting in this
+# same directory with e.g. a real ABUSEIPDB_API_KEY would otherwise leak
+# into every test run, making lookup_ip attempt real (slow, sandboxed-
+# network-blocked) HTTP calls instead of the deterministic no-key path
+# these tests assume, and turning "run the test suite" into something
+# whose outcome depends on which files happen to exist on disk.
+for _key in (
+    "ABUSEIPDB_API_KEY",
+    "IPINFO_API_KEY",
+    "VIRUSTOTAL_API_KEY",
+    "OTX_API_KEY",
+    "GREYNOISE_API_KEY",
+    "SHODAN_API_KEY",
+    "ABUSECH_AUTH_KEY",
+    "SERPAPI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "SMTP_HOST",
+):
+    os.environ[_key] = ""
+
 import httpx  # noqa: E402
 import psycopg2  # noqa: E402
 import pytest  # noqa: E402

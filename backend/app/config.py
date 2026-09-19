@@ -74,6 +74,25 @@ class Settings(BaseSettings):
     # already carries location data — it never guesses one.
     ipinfo_api_key: str | None = None
 
+    # Additional IP reputation sources, aggregated alongside AbuseIPDB in
+    # app/connectors/threat_feed.py. Each is entirely optional and
+    # independent — set any subset and lookup_ip() queries only the ones
+    # configured, in parallel, and folds a source's own failure into an
+    # honest "unknown" for that source rather than the whole lookup.
+    virustotal_api_key: str | None = None
+    otx_api_key: str | None = None  # AlienVault OTX
+    greynoise_api_key: str | None = None
+    shodan_api_key: str | None = None
+    # abuse.ch's shared Auth-Key (https://auth.abuse.ch) — used for the
+    # ThreatFox indicator-of-compromise lookup.
+    abusech_auth_key: str | None = None
+
+    # SerpAPI — used by the Exposure agent's real-search OSINT step (does
+    # the tenant's own domain turn up in Google results alongside
+    # exposure-indicating terms — leaked files, breach mentions). Without
+    # it, that step is simply skipped, never faked.
+    serpapi_api_key: str | None = None
+
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
     # Login brute-force protection. Two independent counters: one per

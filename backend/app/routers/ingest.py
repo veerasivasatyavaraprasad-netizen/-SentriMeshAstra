@@ -6,7 +6,7 @@ from app.bus import CH_RAW_EVENTS, get_bus
 from app.connector_auth import authenticate_connector
 from app.database import get_db
 from app.models import User, UserRole
-from app.schemas import IngestEvent
+from app.schemas import DependencyScanRequest, IngestEvent
 
 router = APIRouter(prefix="/api", tags=["ingest"])
 
@@ -68,3 +68,24 @@ async def request_exposure_scan(tenant_id: str, domain: str, user: User = Depend
         tenant_id=tenant_id,
     )
     return {"status": "scan_requested", "domain": domain}
+
+
+@router.post("/tenants/{tenant_id}/dependency-scan")
+async def request_dependency_scan(
+    tenant_id: str, payload: DependencyScanRequest, user: User = Depends(get_current_user)
+):
+    """Real known-vulnerability lookups (OSV.dev + GitHub Advisory
+    Database) for dependencies the tenant declares here — e.g. lines
+    parsed from their own requirements.txt/package.json — never a package
+    list this platform infers or scans for on its own."""
+    _check_tenant_access(user, tenant_id)
+    bus = await get_bus()
+    from app.agents.exposure import CH_DEPENDENCY_SCAN_REQUESTED
+
+    await bus.publish(
+        CH_DEPENDENCY_SCAN_REQUESTED,
+        {"tenant_id": tenant_id, "packages": [p.model_dump() for p in payload.packages]},
+        actor="api",
+        tenant_id=tenant_id,
+    )
+    return {"status": "scan_requested", "package_count": len(payload.packages)}
