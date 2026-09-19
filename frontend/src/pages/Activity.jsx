@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
-import { useTenantId } from "../lib/session";
+import { useSession, useTenantId } from "../lib/session";
 
 export function Activity() {
   const tenantId = useTenantId();
+  const { eventsVersion } = useSession();
   const [entries, setEntries] = useState([]);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(null);
@@ -13,11 +14,7 @@ export function Activity() {
     api.listActivity(tenantId).then(setEntries).catch((e) => setError(e.message));
   }, [tenantId]);
 
-  useEffect(() => {
-    load();
-    const interval = setInterval(load, 6000);
-    return () => clearInterval(interval);
-  }, [load]);
+  useEffect(load, [load, eventsVersion]);
 
   if (!tenantId) return <div className="panel">Select a company from the sidebar.</div>;
 

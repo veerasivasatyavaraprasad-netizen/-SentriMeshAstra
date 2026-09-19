@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
-import { useTenantId } from "../lib/session";
+import { useSession, useTenantId } from "../lib/session";
 
 export function Overview() {
   const tenantId = useTenantId();
+  const { eventsVersion, liveConnected } = useSession();
   const [overview, setOverview] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -14,11 +15,9 @@ export function Overview() {
     api.getOverview(tenantId).then(setOverview).catch((e) => setError(e.message));
   }, [tenantId]);
 
-  useEffect(() => {
-    load();
-    const interval = setInterval(load, 8000);
-    return () => clearInterval(interval);
-  }, [load]);
+  // Refetches the instant the agent pipeline pushes anything relevant —
+  // no polling interval, no up-to-N-second delay.
+  useEffect(load, [load, eventsVersion]);
 
   async function toggleKillSwitch(engaged) {
     setBusy(true);
@@ -44,6 +43,13 @@ export function Overview() {
       <div className="topbar">
         <h1>Overview</h1>
         <div className="row">
+          <span className="muted" style={{ fontSize: 12 }}>
+            {liveConnected ? (
+              <span style={{ color: "var(--ok)" }}>● live</span>
+            ) : (
+              <span style={{ color: "var(--warn)" }}>● reconnecting…</span>
+            )}
+          </span>
           {overview.kill_switch_engaged ? (
             <button className="primary" onClick={() => toggleKillSwitch(false)} disabled={busy}>
               Disengage kill switch

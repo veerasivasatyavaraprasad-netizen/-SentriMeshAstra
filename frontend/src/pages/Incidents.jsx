@@ -1,10 +1,11 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { Badge } from "../components/Badge";
 import { api } from "../lib/api";
-import { useTenantId } from "../lib/session";
+import { useSession, useTenantId } from "../lib/session";
 
 export function Incidents() {
   const tenantId = useTenantId();
+  const { eventsVersion } = useSession();
   const [incidents, setIncidents] = useState([]);
   const [expanded, setExpanded] = useState(null);
   const [error, setError] = useState("");
@@ -14,11 +15,7 @@ export function Incidents() {
     api.listIncidents(tenantId).then(setIncidents).catch((e) => setError(e.message));
   }, [tenantId]);
 
-  useEffect(() => {
-    load();
-    const interval = setInterval(load, 10000);
-    return () => clearInterval(interval);
-  }, [load]);
+  useEffect(load, [load, eventsVersion]);
 
   if (!tenantId) return <div className="panel">Select a company from the sidebar.</div>;
 

@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { api, clearSession, getSession, saveSession } from "./api";
+import { useTenantEventStream } from "./liveEvents";
 
 const SessionContext = createContext(null);
 
@@ -16,6 +17,13 @@ export function SessionProvider({ children }) {
     if (session?.tenantId) setActiveTenantId(session.tenantId);
   }, [session]);
 
+  const isAdmin = session?.role === "admin";
+  const tenantIdForEvents = isAdmin ? activeTenantId : session?.tenantId;
+  // One WebSocket per active tenant, shared by every page via context —
+  // not one per page, which would open a redundant connection each time
+  // the user switches tabs.
+  const { version: eventsVersion, connected: liveConnected } = useTenantEventStream(tenantIdForEvents);
+
   async function login(email, password) {
     const data = await api.login(email, password);
     saveSession(data, email);
@@ -31,11 +39,20 @@ export function SessionProvider({ children }) {
     setActiveTenantId("");
   }
 
-  const isAdmin = session?.role === "admin";
-
   return (
     <SessionContext.Provider
-      value={{ session, login, logout, isAdmin, activeTenantId, setActiveTenantId, tenantsVersion, refreshTenants }}
+      value={{
+        session,
+        login,
+        logout,
+        isAdmin,
+        activeTenantId,
+        setActiveTenantId,
+        tenantsVersion,
+        refreshTenants,
+        eventsVersion,
+        liveConnected,
+      }}
     >
       {children}
     </SessionContext.Provider>

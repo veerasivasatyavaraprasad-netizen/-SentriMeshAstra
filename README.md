@@ -37,7 +37,21 @@ All 8 talk only over `backend/app/bus.py` (Redis pub/sub), and **every
 message is written to the audit log before it's dispatched** — that's
 `backend/app/routers/activity.py` on the console, the Guardian's ledger.
 
-## The safety model
+## Real-time, not polling
+
+The console pushes, it doesn't poll. `backend/app/routers/ws.py` opens a
+WebSocket per active tenant (`GET /ws/tenants/{id}?token=<jwt>`) and
+`backend/app/realtime.py` bridges it to the same Redis bus the agents
+talk over — every incident, enrichment, classification, action, and
+report shows up in the browser the instant an agent publishes it, with
+no fixed refresh delay. The frontend (`frontend/src/lib/liveEvents.js`)
+opens one connection per active tenant (shared across every open page via
+`SessionProvider`, not one per page), reconnects automatically with
+backoff if it drops, and a small "● live" indicator on Overview shows the
+connection state. Verified live end-to-end: a Playwright browser session
+left sitting on the Incidents page picked up a newly ingested attack with
+zero reloads or clicks — see the test suite below for the automated
+version of the same check.
 
 - **Autonomy tiers** (`backend/app/policy/engine.py`): every proposed
   action is classified tier-1 (auto-run, read-only/low-risk), tier-2
@@ -194,7 +208,7 @@ revoke, never to someone hand-typing a payload into their own session.
 cd backend && source .venv/bin/activate && python -m pytest tests/ -v
 ```
 
-45 tests, two kinds:
+49 tests, three kinds:
 
 - **Unit tests** (policy engine tier decisions, detection/threat-intel
   pure logic, the AbuseIPDB no-fallback behavior — including a regression
@@ -222,6 +236,13 @@ cd backend && source .venv/bin/activate && python -m pytest tests/ -v
   platform audit access. They run against a dedicated `sentrimesh_test`
   database (dropped and recreated fresh each test session) and a separate
   Redis logical DB — never your dev data.
+- **WebSocket tests** (`tests/test_realtime_ws.py`) run a real bound
+  uvicorn server and connect with a real `websockets` client — not
+  Starlette's simulated-ASGI TestClient — because a genuine handshake and
+  a genuine socket are the actual thing being tested. Cover: real events
+  pushed end-to-end within the dashboard channel set, and rejection for
+  no token, an invalid token, and a security holder connecting to a
+  tenant that isn't theirs.
 
 ## Scope and limits — read this before selling it
 
@@ -256,6 +277,14 @@ implemented**:
 - **Threat intelligence feeds beyond AbuseIPDB.** VirusTotal, file-hash and
   CVE lookups aren't wired up — the call site is isolated so adding one is
   a single-file change, same pattern as the AbuseIPDB integration.
+- **WebSocket fan-out at scale.** Each open dashboard tab holds its own
+  Redis pub/sub subscription (`app/realtime.py`) — simple and correct at
+  the scale of one open tab per person watching a company's console.
+  Hundreds of simultaneously open tabs would mean hundreds of Redis
+  subscriptions doing the same tenant-filtering work independently; the
+  fix at that scale is a small fan-out layer (one subscription, broadcast
+  to many WebSocket connections), not a redesign of the push mechanism
+  itself.
 - **Deeper authorized pentesting.** The Exposure agent does passive,
   read-only checks (TLS, security headers) against the tenant's own
   verified domain only. Active/authorized penetration testing is a scoped,

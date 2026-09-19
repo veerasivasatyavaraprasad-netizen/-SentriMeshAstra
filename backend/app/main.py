@@ -22,6 +22,7 @@ from app.routers import (
     overview,
     reports,
     tenants,
+    ws,
 )
 from app.security_headers import SecurityHeadersMiddleware
 
@@ -94,6 +95,7 @@ app.include_router(activity.router)
 app.include_router(overview.router)
 app.include_router(connectors.router)
 app.include_router(admin_audit.router)
+app.include_router(ws.router)
 
 
 @app.get("/api/health")

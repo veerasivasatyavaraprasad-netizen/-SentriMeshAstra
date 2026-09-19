@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "../components/Badge";
 import { api } from "../lib/api";
-import { useTenantId } from "../lib/session";
+import { useSession, useTenantId } from "../lib/session";
 
 export function Approvals() {
   const tenantId = useTenantId();
+  const { eventsVersion } = useSession();
   const [approvals, setApprovals] = useState([]);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState(null);
@@ -15,11 +16,7 @@ export function Approvals() {
     api.listApprovals(tenantId).then(setApprovals).catch((e) => setError(e.message));
   }, [tenantId]);
 
-  useEffect(() => {
-    load();
-    const interval = setInterval(load, 8000);
-    return () => clearInterval(interval);
-  }, [load]);
+  useEffect(load, [load, eventsVersion]);
 
   async function decide(id, approve) {
     setBusyId(id);
