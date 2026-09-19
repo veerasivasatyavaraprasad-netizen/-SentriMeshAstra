@@ -4,8 +4,8 @@ from app.connectors.threat_feed import lookup_ip
 from app.models import Incident, Severity
 
 
-def test_normalize_maps_common_field_aliases():
-    normalized = normalize("wazuh", "login_failed", {"source_ip": "1.2.3.4", "username": "bob"})
+def test_normalize_maps_common_field_aliases_for_an_unrecognized_connector_type():
+    normalized = normalize("some_custom_forwarder", "custom", "login_failed", {"source_ip": "1.2.3.4", "username": "bob"})
     assert normalized["src_ip"] == "1.2.3.4"
     assert normalized["user"] == "bob"
 
@@ -39,3 +39,15 @@ def test_recommend_action_disables_account_for_privilege_escalation():
     incident = Incident(mitre_techniques=["T1068 - Exploitation for Privilege Escalation"])
     action = recommend_action(incident, {})
     assert action == "disable_account"
+
+
+def test_recommend_action_forces_password_reset_for_impossible_travel():
+    incident = Incident(mitre_techniques=["T1078 - Valid Accounts"])
+    action = recommend_action(incident, {"impossible_travel": True})
+    assert action == "force_password_reset"
+
+
+def test_recommend_action_quarantines_endpoint_for_malware_detection():
+    incident = Incident(mitre_techniques=["T1059 - Command and Scripting Interpreter"])
+    action = recommend_action(incident, {"malware_detected": True})
+    assert action == "quarantine_endpoint"

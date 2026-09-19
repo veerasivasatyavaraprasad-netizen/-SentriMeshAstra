@@ -55,10 +55,16 @@ class UserOut(BaseModel):
 
 
 class IngestEvent(BaseModel):
-    """Shape accepted from connectors (Wazuh-style alert, or the synthetic demo feed)."""
+    """Shape accepted from connectors. `source` is a free-text label for
+    display only (e.g. "prod-wazuh-01") — the authenticated connector's
+    own registered connector_type, not this field, decides which log
+    format parser runs (see app/connectors/log_formats.py). `event_type`
+    is optional: a real Wazuh/CloudTrail/Azure AD payload is classified
+    from its own real fields; only a connector_type without a dedicated
+    parser needs the caller to say what kind of event this is."""
 
     source: str
-    event_type: str
+    event_type: str | None = None
     occurred_at: datetime | None = None
     data: dict
 

@@ -62,9 +62,17 @@ class Settings(BaseSettings):
     # only once you understand exactly what it will firewall.
     enable_real_response_execution: bool = False
 
-    # AbuseIPDB — used by the Threat Intelligence agent when set; falls
-    # back to the small local demo blocklist otherwise.
+    # AbuseIPDB — used by the Threat Intelligence agent for real IP
+    # reputation when set; enrichment honestly reports "unknown" (never a
+    # fabricated verdict) when this is unset or a lookup fails.
     abuseipdb_api_key: str | None = None
+
+    # ipinfo.io — used by Detection's impossible-travel check to resolve
+    # an IP to a country when the event's own source didn't already supply
+    # one (Azure AD sign-in logs do; Wazuh/CloudTrail don't). Without this
+    # set, impossible-travel detection only evaluates events whose source
+    # already carries location data — it never guesses one.
+    ipinfo_api_key: str | None = None
 
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 

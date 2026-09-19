@@ -39,3 +39,36 @@ def test_severity_scoring_thresholds():
         severity_from_signals(failed_login_count=25, malicious_indicator=True, new_admin_activity=True)
         == Severity.CRITICAL
     )
+
+
+def test_impossible_travel_alone_reaches_high_severity():
+    """Confirmed-implausible sign-in velocity is treated like a strong,
+    direct signal on its own — not something that needs to stack with
+    other evidence before it's taken seriously."""
+    assert (
+        severity_from_signals(
+            failed_login_count=0, malicious_indicator=False, new_admin_activity=False, impossible_travel=True
+        )
+        == Severity.HIGH
+    )
+
+
+def test_malware_detected_alone_reaches_medium_severity():
+    """A confirmed malware/rootkit signature is direct evidence of
+    compromise, weighted the same as a confirmed-malicious IP — not
+    something that gets silently classified as low severity."""
+    assert (
+        severity_from_signals(
+            failed_login_count=0, malicious_indicator=False, new_admin_activity=False, malware_detected=True
+        )
+        == Severity.MEDIUM
+    )
+
+
+def test_malware_detected_plus_malicious_indicator_reaches_critical():
+    assert (
+        severity_from_signals(
+            failed_login_count=0, malicious_indicator=True, new_admin_activity=False, malware_detected=True
+        )
+        == Severity.CRITICAL
+    )

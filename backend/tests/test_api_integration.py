@@ -199,9 +199,14 @@ async def test_ingest_without_any_connector_token_is_rejected(client):
 
 
 async def test_full_attack_pipeline_reaches_a_pending_approval(client, mock_abuseipdb_malicious):
+    # "generic" connector type: _push_bruteforce sends the flat
+    # {"src_ip": ..., "user": ...} shape, which the generic normalizer
+    # understands. A "wazuh"-typed connector expects real nested Wazuh
+    # alert JSON instead — see test_log_formats.py and
+    # test_wazuh_connector_pipeline_uses_real_alert_shape below for that.
     admin_token = await _admin_token(client)
     tenant = await _create_tenant(client, admin_token)
-    connector = await _create_connector(client, admin_token, tenant["id"], "wazuh")
+    connector = await _create_connector(client, admin_token, tenant["id"])
 
     await _push_bruteforce(client, tenant["id"], connector["token"])
 
@@ -488,9 +493,17 @@ async def test_connector_token_lifecycle_and_health_tracking(client):
     assert connector["last_event_at"] is None
 
     # The token alone authenticates — no human Authorization at all otherwise.
+    # Real nested Wazuh alert shape, since this connector is registered as
+    # connector_type "wazuh" and gets parsed by normalize_wazuh().
     r = await client.post(
         f"/api/tenants/{tenant['id']}/ingest",
-        json={"source": "wazuh", "event_type": "login_failed", "data": {"src_ip": "198.51.100.23"}},
+        json={
+            "source": "wazuh",
+            "data": {
+                "rule": {"level": 10, "description": "Multiple authentication failures.", "id": "5710", "groups": ["authentication_failed"]},
+                "data": {"srcip": "198.51.100.23", "srcuser": "root"},
+            },
+        },
         headers={"Authorization": f"Bearer {connector['token']}"},
     )
     assert r.status_code == 200, r.text
@@ -533,3 +546,174 @@ async def test_connector_token_lifecycle_and_health_tracking(client):
         headers={"Authorization": f"Bearer {new_token}"},
     )
     assert r.status_code == 200
+
+
+async def test_wazuh_connector_pipeline_uses_real_alert_shape_and_its_own_mitre_data(client):
+    """End-to-end proof that a connector registered as connector_type
+    "wazuh" gets parsed by the real Wazuh alert format (nested rule/data,
+    including rule.mitre) — not the generic flat-field guesser — and that
+    the resulting incident carries Wazuh's OWN real MITRE ATT&CK
+    classification rather than our own technique_key heuristic guess."""
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+    connector = await _create_connector(client, admin_token, tenant["id"], "wazuh")
+    headers = {"Authorization": f"Bearer {connector['token']}"}
+
+    def wazuh_alert(rule_id: str, level: int, description: str, groups: list[str], mitre_id=None, mitre_technique=None, srcuser="root"):
+        rule = {"id": rule_id, "level": level, "description": description, "groups": groups}
+        if mitre_id:
+            rule["mitre"] = {"id": [mitre_id], "technique": [mitre_technique]}
+        return {"source": "wazuh", "data": {"rule": rule, "data": {"srcip": "198.51.100.77", "srcuser": srcuser}}}
+
+    for _ in range(6):
+        r = await client.post(
+            f"/api/tenants/{tenant['id']}/ingest",
+            json=wazuh_alert("5710", 10, "Multiple authentication failures.", ["authentication_failed"], "T1110", "Brute Force"),
+            headers=headers,
+        )
+        assert r.status_code == 200
+    r = await client.post(
+        f"/api/tenants/{tenant['id']}/ingest",
+        json=wazuh_alert("5715", 3, "sshd authentication success.", ["authentication_success"], "T1110", "Brute Force"),
+        headers=headers,
+    )
+    assert r.status_code == 200
+
+    async def incident_with_real_mitre_data():
+        resp = await client.get(f"/api/tenants/{tenant['id']}/incidents", headers=_auth(admin_token))
+        data = resp.json()
+        if data and data[0]["mitre_techniques"]:
+            return data
+        return None
+
+    incidents = await _wait_until(incident_with_real_mitre_data)
+    assert len(incidents) == 1
+    # Wazuh's own classification, verbatim — not our MITRE_MAP guess.
+    assert incidents[0]["mitre_techniques"] == ["T1110 - Brute Force"]
+
+
+async def test_wazuh_malware_alert_opens_incident_with_real_rule_description(client):
+    """End-to-end proof that a real Wazuh rootcheck/malware alert (not a
+    login event) is classified as malware_detected and opens an incident
+    whose description is Wazuh's own rule.description — through the real
+    ingest -> Integration -> Detection pipeline, no mocking."""
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+    connector = await _create_connector(client, admin_token, tenant["id"], "wazuh")
+    headers = {"Authorization": f"Bearer {connector['token']}"}
+
+    alert = {
+        "source": "wazuh",
+        "data": {
+            "rule": {
+                "id": "510",
+                "level": 7,
+                "description": "Rootcheck: Trojaned version of file '/usr/bin/find' detected.",
+                "groups": ["rootcheck"],
+            },
+            "agent": {"id": "001", "name": "db-server-01"},
+            "data": {"srcip": "198.51.100.88"},
+        },
+    }
+    r = await client.post(f"/api/tenants/{tenant['id']}/ingest", json=alert, headers=headers)
+    assert r.status_code == 200
+
+    async def malware_incident():
+        resp = await client.get(f"/api/tenants/{tenant['id']}/incidents", headers=_auth(admin_token))
+        matches = [i for i in resp.json() if "Malware" in i["title"] and i["severity"] != "low"]
+        return matches if matches else None
+
+    incidents = await _wait_until(malware_incident)
+    assert len(incidents) == 1
+    incident = incidents[0]
+    assert "198.51.100.88" in incident["title"]
+    assert incident["description"] == "Rootcheck: Trojaned version of file '/usr/bin/find' detected."
+    assert incident["enrichment"]["context"]["technique_key"] == "malware_signature"
+    # A confirmed malware signature is direct evidence of compromise on
+    # its own — never silently left at "low".
+    assert incident["severity"] == "medium"
+
+
+def _azure_sign_in(user: str, ip: str, country: str, city: str = "City"):
+    return {
+        "source": "azure_ad",
+        "data": {
+            "userPrincipalName": user,
+            "ipAddress": ip,
+            "status": {"errorCode": 0},
+            "location": {"city": city, "countryOrRegion": country},
+            "appDisplayName": "Office 365",
+        },
+    }
+
+
+async def test_impossible_travel_detected_from_real_azure_ad_sign_ins(client):
+    """End-to-end: two real Azure-AD-shaped sign-ins for the same user,
+    from countries an ocean apart, minutes apart — through the real
+    ingest -> Detection -> Orchestrator pipeline, no mocking of the
+    detection logic itself (only AbuseIPDB, which impossible-travel
+    doesn't even use — Azure AD supplies the country directly)."""
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+    connector = await _create_connector(client, admin_token, tenant["id"], "azure_ad")
+    headers = {"Authorization": f"Bearer {connector['token']}"}
+
+    user = f"alice-{uuid.uuid4().hex[:6]}@contoso.com"
+    r = await client.post(f"/api/tenants/{tenant['id']}/ingest", json=_azure_sign_in(user, "203.0.113.1", "US", "Seattle"), headers=headers)
+    assert r.status_code == 200
+
+    # Give Detection's async handler chain time to actually store the
+    # first sign-in as the user's location baseline (app/geo.py /
+    # set_last_value) before the second sign-in arrives to compare
+    # against it — polling the activity log isn't a reliable enough
+    # signal for this specific step, since the raw-event audit entry
+    # exists as soon as the POST returns, well before that.
+    await asyncio.sleep(1.0)
+
+    r = await client.post(f"/api/tenants/{tenant['id']}/ingest", json=_azure_sign_in(user, "203.0.113.2", "RU", "Moscow"), headers=headers)
+    assert r.status_code == 200
+
+    async def impossible_travel_incident():
+        # Wait for classification (severity != "low"), not just for the
+        # row to exist — Detection opens it at the default severity,
+        # before Orchestrator's async classification hop has run.
+        resp = await client.get(f"/api/tenants/{tenant['id']}/incidents", headers=_auth(admin_token))
+        matches = [i for i in resp.json() if "Impossible travel" in i["title"] and i["severity"] != "low"]
+        return matches if matches else None
+
+    incidents = await _wait_until(impossible_travel_incident)
+    assert len(incidents) == 1
+    incident = incidents[0]
+    assert "T1078" in incident["mitre_techniques"][0]
+    assert incident["severity"] in ("high", "critical")
+    assert incident["enrichment"]["context"]["from_country"] == "US"
+    assert incident["enrichment"]["context"]["to_country"] == "RU"
+    assert incident["enrichment"]["context"]["implied_speed_kmh"] > 1000
+
+
+async def test_impossible_travel_not_flagged_for_repeat_sign_ins_from_the_same_country(client):
+    """The false-positive check that's actually achievable in a fast test:
+    two sign-ins from the *same* country, seconds apart (completely
+    normal — someone signing in twice), must never trigger this,
+    regardless of how little time separates them. (A genuinely
+    plausible-vs-impossible *cross-country* comparison is a physics
+    question already covered directly in tests/test_geo.py — two API
+    calls in a test necessarily land seconds apart, and real intercontinental
+    distances in mere seconds are correctly flagged, not a false positive.)"""
+    admin_token = await _admin_token(client)
+    tenant = await _create_tenant(client, admin_token)
+    connector = await _create_connector(client, admin_token, tenant["id"], "azure_ad")
+    headers = {"Authorization": f"Bearer {connector['token']}"}
+
+    user = f"bob-{uuid.uuid4().hex[:6]}@contoso.com"
+    r = await client.post(f"/api/tenants/{tenant['id']}/ingest", json=_azure_sign_in(user, "203.0.113.3", "US", "Seattle"), headers=headers)
+    assert r.status_code == 200
+
+    await asyncio.sleep(1.0)  # let the first sign-in's baseline actually get stored first
+
+    r = await client.post(f"/api/tenants/{tenant['id']}/ingest", json=_azure_sign_in(user, "203.0.113.4", "US", "Portland"), headers=headers)
+    assert r.status_code == 200
+    await asyncio.sleep(1.5)  # give the pipeline a moment; nothing should appear
+
+    resp = await client.get(f"/api/tenants/{tenant['id']}/incidents", headers=_auth(admin_token))
+    assert all("Impossible travel" not in i["title"] for i in resp.json())

@@ -1,12 +1,19 @@
-"""Shared, cross-instance counters backed by Redis sorted sets.
+"""Shared, cross-instance state backed by Redis.
 
-Used anywhere correctness has to hold across multiple backend replicas —
-Detection's failed-login sliding window, and the login endpoint's
-brute-force counter. Each member is a unique per-call token (so repeated
-calls in the same millisecond don't collide and get silently dropped),
-scored by its timestamp; membership older than the window is trimmed on
-every call, and the key expires on its own if nothing touches it again.
+Sliding-window counters (sorted sets) are used anywhere correctness has
+to hold across multiple backend replicas — Detection's failed-login
+window, and the login endpoint's brute-force counter. Each member is a
+unique per-call token (so repeated calls in the same millisecond don't
+collide and get silently dropped), scored by its timestamp; membership
+older than the window is trimmed on every call, and the key expires on
+its own if nothing touches it again.
+
+get_last_value/set_last_value is a second, simpler primitive — one JSON
+value per key with a TTL — used for "what did we last see for this
+key" state (e.g. a user's last known sign-in country, for impossible-
+travel correlation), which needs a single shared value, not a count.
 """
+import json
 import time
 import uuid
 
@@ -40,3 +47,17 @@ async def count_without_recording(bus: EventBus, key: str, *, window_seconds: in
     cutoff = now - window_seconds
     await redis.zremrangebyscore(key, 0, cutoff)
     return int(await redis.zcard(key))
+
+
+async def get_last_value(bus: EventBus, key: str) -> dict | None:
+    raw = await bus.redis.get(key)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+async def set_last_value(bus: EventBus, key: str, value: dict, *, ttl_seconds: int) -> None:
+    await bus.redis.set(key, json.dumps(value), ex=ttl_seconds)

@@ -4,23 +4,26 @@ from sqlalchemy import select
 
 from app.agents.base import Agent
 from app.bus import CH_NORMALIZED_EVENTS, CH_RAW_EVENTS
+from app.connectors.log_formats import normalize_for_connector_type
 from app.models import ConnectorConfig, LogEvent
 
 
-def normalize(source: str, event_type: str, data: dict) -> dict:
-    """Map connector-specific fields into one common shape.
-
-    A production build would have one mapping per connector (Wazuh,
-    CloudTrail, Azure AD sign-in logs, ...). This MVP normalizes the two
-    shapes it actually ships: the generic webhook and the synthetic demo
-    feed, both of which already send reasonably normalized JSON.
-    """
+def normalize(connector_type: str, source_label: str, event_type: str | None, data: dict) -> dict:
+    """Map a connector's raw payload into one common shape, using the
+    real per-vendor field mapping in app/connectors/log_formats.py for a
+    known connector_type (Wazuh, CloudTrail, Azure AD sign-in logs), or a
+    best-effort generic guess otherwise."""
+    result = normalize_for_connector_type(connector_type, event_type, data)
     return {
-        "source": source,
-        "event_type": event_type,
-        "src_ip": data.get("src_ip") or data.get("source_ip"),
-        "user": data.get("user") or data.get("username"),
-        "outcome": data.get("outcome"),
+        "source": source_label,
+        "connector_type": connector_type,
+        "event_type": result.event_type,
+        "src_ip": result.src_ip,
+        "user": result.user,
+        "outcome": result.outcome,
+        "mitre_techniques": result.mitre_techniques,
+        "country": result.country,
+        "vendor_detail": result.extra,
         "raw": data,
     }
 
@@ -36,11 +39,19 @@ class IntegrationAgent(Agent):
     async def on_raw_event(self, payload: dict) -> None:
         tenant_id = payload["tenant_id"]
         source = payload["source"]
-        event_type = payload["event_type"]
+        # connector_type drives which real vendor parser runs (see
+        # app/connectors/log_formats.py); it comes from the authenticated
+        # connector's own registration, not the free-text `source` label.
+        connector_type = payload.get("connector_type") or source
         data = payload["data"]
         occurred_at = payload.get("occurred_at")
 
-        normalized = normalize(source, event_type, data)
+        normalized = normalize(connector_type, source, payload.get("event_type"), data)
+        # The real, classified event_type (from the vendor parser, or the
+        # caller-supplied one for an unrecognized connector_type) — never
+        # the possibly-absent raw caller value, which the DB column and
+        # every downstream agent expect to always be a real string.
+        event_type = normalized["event_type"]
 
         async with self.session() as db:
             event = LogEvent(

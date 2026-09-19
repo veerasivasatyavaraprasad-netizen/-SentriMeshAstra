@@ -130,11 +130,10 @@ export function Settings() {
           {isAdmin && (
             <form onSubmit={createConnector} className="row wrap" style={{ marginTop: 14 }}>
               <select value={newConnectorType} onChange={(e) => setNewConnectorType(e.target.value)}>
-                <option value="wazuh">Wazuh</option>
-                <option value="splunk">Splunk</option>
-                <option value="cloudtrail">AWS CloudTrail</option>
-                <option value="azure_ad">Azure AD sign-in logs</option>
-                <option value="generic">Generic webhook</option>
+                <option value="wazuh">Wazuh — parses real alert JSON, including its own MITRE ATT&CK data</option>
+                <option value="cloudtrail">AWS CloudTrail — parses real event records</option>
+                <option value="azure_ad">Azure AD sign-in logs — parses real sign-in event schema</option>
+                <option value="generic">Generic webhook — best-effort field guessing, no vendor schema</option>
               </select>
               <input
                 placeholder="Display name (optional)"

@@ -11,6 +11,17 @@ def recommend_action(incident: Incident, context: dict) -> str | None:
     action. Deliberately simple and legible — this is the kind of decision
     a customer should be able to read and agree with, not a black box."""
     techniques = incident.mitre_techniques or []
+    if context.get("impossible_travel"):
+        # An account signing in from two implausibly distant locations in
+        # too short a window: force a reset now rather than wait — this is
+        # exactly the situation where "notify and see" is the wrong call.
+        return "force_password_reset"
+    if context.get("malware_detected"):
+        # No safe way to remotely remediate the infected host itself from
+        # here (that needs a real EDR/agent integration, which this
+        # platform doesn't have) — quarantining its network access is the
+        # containment step actually within reach, and it's reversible.
+        return "quarantine_endpoint"
     if any("T1110" in t for t in techniques):  # brute force
         if context.get("malicious_indicator"):
             return "block_ip"
@@ -37,6 +48,8 @@ class OrchestratorAgent(Agent):
             failed_login_count=context.get("failed_login_count", 0),
             malicious_indicator=bool(context.get("malicious_indicator")),
             new_admin_activity=bool(context.get("new_admin_activity")),
+            impossible_travel=bool(context.get("impossible_travel")),
+            malware_detected=bool(context.get("malware_detected")),
         )
 
         async with self.session() as db:

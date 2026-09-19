@@ -94,7 +94,14 @@ def classify_action(action_type: str, severity: Severity) -> PolicyDecision:
     return PolicyDecision(tier=tier, reversible=reversible, rollback_plan=rollback_plan, reasoning=reasoning)
 
 
-def severity_from_signals(*, failed_login_count: int, malicious_indicator: bool, new_admin_activity: bool) -> Severity:
+def severity_from_signals(
+    *,
+    failed_login_count: int,
+    malicious_indicator: bool,
+    new_admin_activity: bool,
+    impossible_travel: bool = False,
+    malware_detected: bool = False,
+) -> Severity:
     """Deterministic severity scoring used by the Orchestrator.
 
     Kept simple and explainable on purpose: every score is one you can
@@ -108,8 +115,20 @@ def severity_from_signals(*, failed_login_count: int, malicious_indicator: bool,
         score += 1
     if malicious_indicator:
         score += 2
+    if malware_detected:
+        # A confirmed malware/rootkit signature on a host is direct,
+        # first-party evidence of compromise — the same weight as a
+        # confirmed-malicious IP, and for the same reason: this isn't an
+        # inference from surrounding behavior, it's the finding itself.
+        score += 2
     if new_admin_activity:
         score += 1
+    if impossible_travel:
+        # A confirmed-implausible sign-in velocity is strong, direct
+        # evidence an account is being used from two places at once — on
+        # its own this reaches HIGH, matching how real identity-protection
+        # tools treat it: not a soft signal to combine with others first.
+        score += 3
 
     if score >= 4:
         return Severity.CRITICAL

@@ -190,6 +190,48 @@ than propose a `block_ip` action, since nothing confirmed the intent. Set
 a real key to get real confirmed-malicious classification and the
 one-tap block proposal that comes with it.
 
+### Impossible-travel detection (real algorithm, not a heuristic guess)
+
+`app/geo.py` implements the actual algorithm real identity-protection
+tools use for this: haversine great-circle distance between two known
+country locations, divided by the elapsed time between two sign-ins for
+the same user, compared against a speed no legitimate traveler can
+exceed (1000 km/h — faster than commercial aviation). A country comes
+either directly from the event source (Azure AD sign-in logs supply
+`location.countryOrRegion` natively — most accurate, zero extra calls)
+or, if `IPINFO_API_KEY` is set, from a real `ipinfo.io` lookup of the
+source IP. Without either, impossible-travel simply isn't evaluated for
+that event — never a guessed location. A confirmed hit classifies as
+HIGH severity on its own and the Orchestrator recommends
+`force_password_reset` (tier-2, one-tap) — this is exactly the situation
+where "notify and see" is the wrong call. Verified live: two real
+Azure-AD-shaped sign-ins for the same user, US then Russia, ~2 seconds
+apart, correctly produced a HIGH-severity incident with a genuinely
+computed ~15 million km/h implied speed and the real haversine distance
+behind it (`backend/tests/test_geo.py`,
+`test_impossible_travel_detected_from_real_azure_ad_sign_ins` in
+`test_api_integration.py`).
+
+### Malware/rootkit detection (real Wazuh rule groups, not invented ones)
+
+A Wazuh alert in its real `rootcheck`/`malware`/`virus` rule groups (or
+whose `rule.description` plainly names a trojan/rootkit finding — some
+malware integrations don't use a dedicated group) classifies as
+`malware_detected`. This is direct, first-party evidence of compromise —
+weighted the same as a confirmed-malicious IP from Threat Intelligence —
+so it reaches MEDIUM severity on its own (CRITICAL if it stacks with
+another signal, e.g. new admin activity), and the Orchestrator recommends
+`quarantine_endpoint` (tier-2, one-tap, reversible). There's no real
+EDR/agent integration in this platform to actually isolate the host, so
+that action dry-runs like every action type besides `block_ip` — but the
+classification, severity, and incident description (Wazuh's own
+`rule.description`, verbatim) are all real, not placeholders. Verified
+live: a real Wazuh `rootcheck` alert through the full ingest pipeline
+correctly opened a MEDIUM-severity incident with a pending
+`quarantine_endpoint` approval (`backend/tests/test_log_formats.py`,
+`test_wazuh_malware_alert_opens_incident_with_real_rule_description` in
+`test_api_integration.py`).
+
 ### Connecting a real log source (Wazuh, etc.)
 
 Settings → "Add connector & issue token" mints a per-connector secret
@@ -202,19 +244,65 @@ token — deliberately no human-JWT fallback, so every event in the
 pipeline traces back to a data source the tenant registered and can
 revoke, never to someone hand-typing a payload into their own session.
 
+The connector type you pick at creation decides how its events get
+parsed (`backend/app/connectors/log_formats.py`) — not a field inside
+the event payload itself, so a connector can't claim a trust level it
+wasn't registered for:
+
+- **`wazuh`** — real Wazuh alert JSON (`rule.*`, `data.*`, `agent.*`).
+  When the alert carries `rule.mitre.id`/`technique` (Wazuh's ruleset
+  populates this for many rules), that vendor classification is used
+  directly for the incident's MITRE ATT&CK techniques — more accurate
+  than any heuristic we could infer from field names, because it's
+  Wazuh's own real analysis of that exact alert. Recognizes
+  authentication success/failure, privilege escalation (`sudo`/
+  `privilege_escalation` groups), and malware/rootkit findings
+  (`rootcheck`/`malware`/`virus` groups — see below).
+- **`cloudtrail`** — real AWS CloudTrail event records (`eventName`,
+  `userIdentity`, `errorCode`, `sourceIPAddress`, ...). Recognizes
+  `ConsoleLogin` (success/failure) and privilege-escalation-shaped API
+  calls (`AttachUserPolicy`, `CreateAccessKey`, `AddUserToGroup`, ...).
+- **`azure_ad`** — real Azure AD sign-in log schema (`ipAddress`,
+  `userPrincipalName`, `status.errorCode`, `location.countryOrRegion`,
+  ...). `errorCode == 0` is success; Microsoft's documented nonzero
+  codes (e.g. 50126 = invalid credentials) are a failure.
+- **anything else** — best-effort generic guessing on common field names
+  (`src_ip`/`source_ip`, `user`/`username`, `outcome`). No fixed vendor
+  schema to parse against, so no vendor-specific accuracy claimed.
+
+Try it directly:
+
+```bash
+curl -X POST http://localhost:8000/api/tenants/<tenant_id>/ingest \
+  -H "Authorization: Bearer <token for a wazuh-typed connector>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "wazuh",
+    "data": {
+      "rule": {"id": "5710", "level": 10, "description": "Multiple authentication failures.",
+               "groups": ["authentication_failed"],
+               "mitre": {"id": ["T1110"], "technique": ["Brute Force"]}},
+      "data": {"srcip": "203.0.113.7", "srcuser": "root"}
+    }
+  }'
+```
+
 ### Tests
 
 ```bash
 cd backend && source .venv/bin/activate && python -m pytest tests/ -v
 ```
 
-49 tests, three kinds:
+77 tests, three kinds:
 
 - **Unit tests** (policy engine tier decisions, detection/threat-intel
-  pure logic, the AbuseIPDB no-fallback behavior — including a regression
-  test locking in that RFC 5737 test-net ranges must still reach
-  AbuseIPDB, since Python's `ipaddress.is_private` would otherwise
-  silently swallow them — Redis-backed sliding-window counters, including
+  pure logic, the real per-vendor log parsers against sample payloads
+  shaped exactly like Wazuh/CloudTrail/Azure AD's own documented
+  schemas — `tests/test_log_formats.py` — the AbuseIPDB no-fallback
+  behavior — including a regression test locking in that RFC 5737
+  test-net ranges must still reach AbuseIPDB, since Python's
+  `ipaddress.is_private` would otherwise silently swallow them — Redis-
+  backed sliding-window counters, including
   a same-counter-from-two-connections test standing in for two backend
   replicas, login lockout logic, and, when run as root with `iptables`
   available, a real block-then-rollback round trip against the host's
@@ -257,11 +345,19 @@ implemented**:
   (AWS Security Groups, Azure AD, CrowdStrike, etc.) still needs its own
   `ActionExecutor` subclass — the interface and the rollback contract are
   proven, the rest of the integrations aren't written.
-- **Real SIEM connectors.** Only a generic, token-authenticated webhook
-  (`POST /api/tenants/{id}/ingest`) exists — no demo/synthetic feed, real
-  events only. A real Wazuh (or Splunk, CloudTrail, Azure AD sign-in log,
-  etc.) forwarder needs its
-  own field-mapping in `backend/app/agents/integration.py::normalize()`.
+- **SIEM connectors beyond Wazuh/CloudTrail/Azure AD.** Those three have
+  real, schema-accurate parsers (`backend/app/connectors/log_formats.py`)
+  — matching each vendor's own documented JSON shape, and for Wazuh,
+  using the alert's own embedded MITRE ATT&CK classification
+  (`rule.mitre.id`/`technique`) directly rather than guessing one. A
+  connector registered as any other type (Splunk, a custom tool, etc.)
+  falls back to best-effort generic field guessing — honestly labeled as
+  such in Settings, not silently treated as if it had a dedicated parser.
+  Splunk doesn't get one here because it has no single canonical event
+  schema to parse against (it indexes whatever you send it); adding a
+  parser for one more fixed-schema vendor (GuardDuty, Okta System Log,
+  etc.) is the same pattern as the three that exist — see
+  `app/connectors/log_formats.py`.
 - **Per-tenant hard isolation.** Tenancy today is one shared database with
   `tenant_id` scoping, enforced at the query layer and covered by tests
   (a security holder gets a 403 touching another tenant's data, even by

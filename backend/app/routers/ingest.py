@@ -43,6 +43,7 @@ async def ingest_event(
         {
             "tenant_id": tenant_id,
             "connector_id": connector.id,
+            "connector_type": connector.connector_type,
             "source": payload.source,
             "event_type": payload.event_type,
             "occurred_at": payload.occurred_at.isoformat() if payload.occurred_at else None,
