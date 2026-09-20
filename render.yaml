@@ -1,0 +1,103 @@
+# Render Blueprint — deploys the full stack (Postgres, Redis, backend,
+# frontend) from one file via Render's dashboard: New + -> Blueprint ->
+# select this repo/branch. See README.md's "Deploying to Render" section
+# for the full walkthrough, including which env vars you'll be prompted
+# to fill in (marked `sync: false` below — Render never reads secret
+# values from this file, only that a value is required).
+#
+# NOTE: this file is written to the best of available documentation
+# knowledge at the time it was authored. If Render's Blueprint parser
+# rejects a specific key (schema names occasionally change), the error
+# it shows names the exact line — the manual, click-through setup in
+# README.md's "Deploying to Render (manual, no blueprint)" section
+# doesn't depend on this file at all and is the more foolproof path.
+databases:
+  - name: sentrimeshastra-db
+    databaseName: sentrimesh
+    user: sentrimesh
+    plan: free
+
+services:
+  - type: redis
+    name: sentrimeshastra-redis
+    plan: free
+    ipAllowList: []
+
+  - type: web
+    name: sentrimeshastra-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sentrimeshastra-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: sentrimeshastra-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        generateValue: true
+      # Update this after the frontend service's real URL is assigned,
+      # if it differs from the deterministic name below (Render appends
+      # a suffix if the name is already taken).
+      - key: CORS_ORIGINS
+        value: '["https://sentrimeshastra-frontend.onrender.com"]'
+      - key: ENABLE_REAL_RESPONSE_EXECUTION
+        value: "false"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ABUSEIPDB_API_KEY
+        sync: false
+      - key: VIRUSTOTAL_API_KEY
+        sync: false
+      - key: OTX_API_KEY
+        sync: false
+      - key: GREYNOISE_API_KEY
+        sync: false
+      - key: SHODAN_API_KEY
+        sync: false
+      - key: ABUSECH_AUTH_KEY
+        sync: false
+      - key: SERPAPI_API_KEY
+        sync: false
+      - key: IPINFO_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: NOTIFY_TO_EMAIL
+        sync: false
+
+  - type: web
+    name: sentrimeshastra-frontend
+    env: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: free
+    envVars:
+      - key: PORT
+        value: "80"
+      # Update this after the backend service's real URL is assigned,
+      # if it differs from the deterministic name below.
+      - key: VITE_API_BASE_URL
+        value: https://sentrimeshastra-backend.onrender.com

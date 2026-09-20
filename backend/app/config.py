@@ -7,6 +7,7 @@ guessing) when a real integration is missing.
 """
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +27,22 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://sentrimesh:sentrimesh@localhost:5432/sentrimesh"
     redis_url: str = "redis://localhost:6379/0"
+
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_database_url(cls, value: str) -> str:
+        # Managed Postgres providers (Render, Heroku, Railway, ...) hand
+        # out a plain postgres:// or postgresql:// URL, whose default
+        # DBAPI is the sync psycopg2 driver — create_async_engine needs
+        # the asyncpg driver named explicitly, or it fails at startup
+        # with a driver mismatch. Rewriting the scheme here means a
+        # copy-pasted provider URL just works, rather than being a
+        # deploy-time footgun the operator has to already know about.
+        if value.startswith("postgres://"):
+            return "postgresql+asyncpg://" + value[len("postgres://") :]
+        if value.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + value[len("postgresql://") :]
+        return value
 
     jwt_secret: str = "change-me-in-production-this-is-not-a-real-secret"
     jwt_algorithm: str = "HS256"

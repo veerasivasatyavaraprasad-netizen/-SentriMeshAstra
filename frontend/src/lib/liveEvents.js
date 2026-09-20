@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { getApiBaseUrl } from "./runtimeConfig";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const API_BASE = getApiBaseUrl();
 const WS_BASE = API_BASE.replace(/^http/, "ws");
 
 /** Opens one WebSocket per active tenant (see app/routers/ws.py) and bumps

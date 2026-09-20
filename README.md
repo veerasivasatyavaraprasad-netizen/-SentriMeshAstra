@@ -115,6 +115,52 @@ docker compose up --build
 - Frontend: http://localhost:5173
 - Log in with the `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` from `.env`.
 
+### Deploying to Render (a real public HTTPS URL)
+
+Two ways in, same result — a live backend + frontend + Postgres + Redis,
+each with its own `https://*.onrender.com` URL:
+
+**Blueprint (fastest):** at [render.com](https://render.com), **New +** →
+**Blueprint** → connect this repo → pick the `claude/practical-goodall-rae5vq`
+branch (or `main` once merged) → Render reads `render.yaml` at the repo
+root and provisions all four services in one go. You'll be prompted for
+the env vars marked `sync: false` in that file (admin email, any of the
+optional threat-intel/SerpAPI/SMTP keys) — nothing secret ever lives in
+the repo itself.
+
+**Manual (no blueprint, most foolproof):** if the Blueprint's exact
+schema has drifted from what's documented here, build the same four
+pieces by hand instead — each step is a normal dashboard form, not YAML:
+1. **New + → PostgreSQL** — free plan, any name. Once it's up, copy its
+   **Internal Database URL**.
+2. **New + → Redis** (or **Key Value**, depending on Render's current
+   naming) — free plan. Copy its **Internal Connection String**.
+3. **New + → Web Service** → connect this repo → **Root Directory**:
+   `backend` → **Environment**: Docker → **Health Check Path**:
+   `/api/health`. Add env vars: `DATABASE_URL` (from step 1 — a plain
+   `postgres://` URL is fine, the app normalizes the scheme itself),
+   `REDIS_URL` (from step 2), `JWT_SECRET` (any long random string),
+   `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` (something real,
+   not the repo's example default), plus any real threat-intel/SMTP keys
+   you have. Deploy, then copy this service's public URL.
+4. **New + → Web Service** → same repo → **Root Directory**: `frontend`
+   → **Environment**: Docker. Add one env var: `VITE_API_BASE_URL` = the
+   backend's public URL from step 3. Deploy, then copy this service's
+   public URL.
+5. Back on the **backend** service's env vars, set `CORS_ORIGINS` to a
+   JSON array containing the frontend's URL from step 4, e.g.
+   `["https://sentrimeshastra-frontend.onrender.com"]`, and save (this
+   redeploys the backend). Without this step the frontend loads but every
+   API/WebSocket call is rejected by CORS — if you see a blank dashboard
+   after login, this is the first thing to check.
+
+Open the frontend's URL and log in with the admin email/password you set
+in step 3. First boot runs Alembic migrations and creates that admin
+account automatically — no separate setup step.
+
+Free-tier services on Render spin down after inactivity and take ~30-60s
+to wake back up on the next request — normal for a free plan, not a bug.
+
 ### Local dev (no Docker)
 
 ```bash

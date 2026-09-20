@@ -8,6 +8,12 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Written by docker-entrypoint.sh from the real container
+         environment at startup; a plain static file in local dev (never
+         created), so getApiBaseUrl()'s fallback to Vite's build-time env
+         applies instead. Loaded before the app bundle so window.__ENV__
+         is already set when runtimeConfig.js reads it. -->
+    <script src="/config.js"></script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
