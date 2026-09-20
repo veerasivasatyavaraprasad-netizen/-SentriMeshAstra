@@ -48,7 +48,10 @@ export function Settings() {
     }
   }
 
-  async function rotateToken(connectorId) {
+  async function rotateToken(connectorId, displayName) {
+    if (!window.confirm(`Rotate the token for "${displayName}"? The old token stops working immediately — any real system already using it (e.g. a running Wazuh agent) will fail to authenticate until it's updated with the new one.`)) {
+      return;
+    }
     setError("");
     try {
       const rotated = await api.rotateConnectorToken(tenantId, connectorId);
@@ -100,7 +103,7 @@ export function Settings() {
                   <td>{c.last_event_at ? new Date(c.last_event_at).toLocaleString() : "—"}</td>
                   <td>
                     {c.has_token && (
-                      <button onClick={() => rotateToken(c.id)} title="Invalidates the current token immediately">
+                      <button onClick={() => rotateToken(c.id, c.display_name)} title="Invalidates the current token immediately">
                         Rotate token
                       </button>
                     )}
@@ -207,18 +210,23 @@ function PlatformSecurityLog() {
 }
 
 function AdminPanel({ onChanged }) {
-  const { refreshTenants, setActiveTenantId } = useSession();
+  const { refreshTenants, setActiveTenantId, tenantsVersion } = useSession();
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
   const [sector, setSector] = useState("general");
   const [tenantCreated, setTenantCreated] = useState(null);
   const [error, setError] = useState("");
 
+  const [allTenants, setAllTenants] = useState([]);
   const [holderEmail, setHolderEmail] = useState("");
   const [holderPassword, setHolderPassword] = useState("");
   const [holderName, setHolderName] = useState("");
   const [holderTenantId, setHolderTenantId] = useState("");
   const [holderMessage, setHolderMessage] = useState("");
+
+  useEffect(() => {
+    api.listTenants().then(setAllTenants).catch(() => {});
+  }, [tenantsVersion]);
 
   async function createTenant(e) {
     e.preventDefault();
@@ -271,7 +279,14 @@ function AdminPanel({ onChanged }) {
 
       <h2>Admin: create the company's security-holder login</h2>
       <form onSubmit={createHolder} className="row wrap">
-        <input placeholder="Tenant ID" value={holderTenantId} onChange={(e) => setHolderTenantId(e.target.value)} required />
+        <select value={holderTenantId} onChange={(e) => setHolderTenantId(e.target.value)} required>
+          <option value="">Select the company…</option>
+          {allTenants.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
         <input placeholder="Full name" value={holderName} onChange={(e) => setHolderName(e.target.value)} />
         <input type="email" placeholder="Email" value={holderEmail} onChange={(e) => setHolderEmail(e.target.value)} required />
         <input

@@ -36,13 +36,38 @@ class ApiError extends Error {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithColdStartRetry(url, init) {
+  // A free-tier backend that's been idle can take up to ~60s to wake,
+  // during which the browser's fetch() itself throws (no HTTP response
+  // ever arrives) rather than returning an error status — one retry
+  // after a short delay silently recovers the common case (a few
+  // seconds asleep) without leaving every real network failure to just
+  // retry forever.
+  try {
+    return await fetch(url, init);
+  } catch {
+    await sleep(3000);
+    try {
+      return await fetch(url, init);
+    } catch {
+      throw new Error(
+        "Couldn't reach the server. If it's been idle for a while, it may still be waking up (free-tier instances sleep after inactivity and can take up to a minute) — try again in a few seconds."
+      );
+    }
+  }
+}
+
 async function request(path, { method = "GET", body, auth = true } = {}) {
   const headers = { "Content-Type": "application/json" };
   if (auth) {
     const token = getToken();
     if (token) headers.Authorization = `Bearer ${token}`;
   }
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetchWithColdStartRetry(`${BASE_URL}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
